@@ -177,12 +177,14 @@ app.post('/api/chat', async (req, res) => {
 
     // 6. 调用模型 API
     const isAnthropic = useApiBase.includes('anthropic.com');
+    // 智能拼接路径：如果地址已经带了 /v1 就不重复加
+    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
 
     let reply = '';
 
     if (isAnthropic) {
       // Anthropic 原生接口
-      const apiRes = await fetch(useApiBase + '/v1/messages', {
+      const apiRes = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -212,7 +214,7 @@ app.post('/api/chat', async (req, res) => {
       if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
       recentMessages.forEach(m => msgs.push({ role: m.role, content: m.content }));
 
-      const apiRes = await fetch(useApiBase + '/v1/messages', {
+      const apiRes = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
