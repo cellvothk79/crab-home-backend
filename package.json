@@ -1,0 +1,16 @@
+{
+  "name": "crab-home-backend",
+  "version": "1.0.0",
+  "description": "两只螃蟹的家 - 后端",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.49.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
