@@ -116,6 +116,43 @@ app.delete('/api/memories/:id', async (req, res) => {
 });
 
 // ═══════════════════════════════════════
+//  拉取模型列表
+// ═══════════════════════════════════════
+
+app.post('/api/models', async (req, res) => {
+  const { api_base, api_key } = req.body;
+  const useApiKey = api_key || process.env.CLAUDE_API_KEY || '';
+  const useApiBase = (api_base || process.env.CLAUDE_API_BASE || '').replace(/\/+$/, '');
+
+  if (!useApiBase) return res.status(400).json({ error: '没有配置中转站地址' });
+
+  try {
+    // 拼接路径：如果已有 /v1 就直接加 /models，否则加 /v1/models
+    const modelsUrl = useApiBase.endsWith('/v1') ? useApiBase + '/models' : useApiBase + '/v1/models';
+
+    const apiRes = await fetch(modelsUrl, {
+      headers: {
+        'Authorization': 'Bearer ' + useApiKey,
+        'x-api-key': useApiKey,
+      },
+    });
+
+    if (!apiRes.ok) throw new Error('HTTP ' + apiRes.status);
+
+    const data = await apiRes.json();
+    // 兼容不同格式
+    const models = (data.data || data.models || data || [])
+      .map(m => typeof m === 'string' ? { id: m } : m)
+      .filter(m => m.id)
+      .map(m => ({ id: m.id, name: m.id }));
+
+    res.json(models);
+  } catch (err) {
+    res.status(500).json({ error: '拉取模型失败: ' + err.message });
+  }
+});
+
+// ═══════════════════════════════════════
 //  核心对话
 // ═══════════════════════════════════════
 
