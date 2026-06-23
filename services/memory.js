@@ -207,8 +207,9 @@ AI：${botReply}
           source: 'chat',
           tags: Array.isArray(item.tags) ? item.tags : [],
         };
-        // source_session_id 只有原始 schema 里有，兼容处理
-        if (sessionId) insertData.source_session_id = sessionId;
+        // source_session_id 是 bigint，只传数字类型
+        const sessionIdNum = parseInt(sessionId);
+        if (!isNaN(sessionIdNum)) insertData.source_session_id = sessionIdNum;
         const { error: insertErr } = await supabase.from('memories').insert(insertData);
         if (insertErr) {
           console.error('记忆写入失败:', insertErr.message, insertErr.details);
