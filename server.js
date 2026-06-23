@@ -12,6 +12,9 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// 记忆服务
+const { searchMemories, extractAndStore, formatMemoriesForPrompt } = require('./services/memory');
+
 // ═══════════ 健康检查 ═══════════
 app.get('/', (req, res) => res.json({ status: 'ok', msg: '🦀🦀 我们的家正在运行' }));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
@@ -210,17 +213,26 @@ app.post('/api/chat', async (req, res) => {
       recentMessages = [{ role: 'user', content }];
     }
 
+    // 语义检索长期记忆
+    const semanticMemories = await searchMemories(content, 8);
+
     // 组装 system prompt
     let systemPrompt = '';
     if (settings?.system_prompt) {
       systemPrompt += settings.system_prompt + '\n\n';
     }
+    // 注入语义检索到的长期记忆
+    if (semanticMemories.length > 0) {
+      systemPrompt += formatMemoriesForPrompt(semanticMemories);
+      systemPrompt += '\n';
+    }
+    // 注入手动记忆库（旧系统，兼容保留）
     if (memories && memories.length > 0) {
-      systemPrompt += '【记忆库】以下是你和用户之间的重要记忆：\n';
+      systemPrompt += '【记忆库】以下是额外的重要记忆：\n';
       memories.forEach((m, i) => {
         systemPrompt += `${i + 1}. ${m.summary}\n`;
       });
-      systemPrompt += '\n请自然地记住这些内容，不要主动提及"记忆库"。\n';
+      systemPrompt += '\n';
     }
 
     // 6. 调用模型 API
@@ -310,6 +322,11 @@ app.post('/api/chat', async (req, res) => {
 
     // 9. 返回
     res.json({ role: 'assistant', content: reply });
+
+    // 8. 异步提取并存储记忆（不阻塞回复）
+    extractAndStore(content, reply, session_id).catch(err =>
+      console.error('记忆提取失败:', err.message)
+    );
 
   } catch (err) {
     console.error('对话错误:', err.message);
@@ -426,6 +443,45 @@ app.post('/api/import', async (req, res) => {
 // ═══════════════════════════════════════
 //  启动
 // ═══════════════════════════════════════
+
+// ═══════════════════════════════════════
+//  记忆系统测试接口
+// ═══════════════════════════════════════
+app.post('/api/memory/test', async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: '缺少 text' });
+  try {
+    const { getEmbedding, searchMemories } = require('./services/memory');
+    // 测试 embedding
+    const embedding = await getEmbedding(text);
+    // 测试检索
+    const memories = await searchMemories(text, 5);
+    res.json({
+      ok: true,
+      embeddingDim: embedding.length,
+      embeddingSample: embedding.slice(0, 5),
+      memoriesFound: memories.length,
+      memories: memories.map(m => ({ summary: m.summary, similarity: m.similarity, decayedWeight: m.decayedWeight })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/memory/extract-test', async (req, res) => {
+  const { userText, botReply } = req.body;
+  if (!userText || !botReply) return res.status(400).json({ error: '缺少参数' });
+  try {
+    await require('./services/memory').extractAndStore(userText, botReply, 'test-session');
+    const { data } = await require('@supabase/supabase-js')
+      .createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+      .from('memories').select('*').order('created_at', { ascending: false }).limit(3);
+    res.json({ ok: true, latestMemories: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
