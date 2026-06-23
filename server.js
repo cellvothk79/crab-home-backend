@@ -172,10 +172,18 @@ app.post('/api/chat', async (req, res) => {
   const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
   try {
-    // 1. 保存用户消息
-    await supabase.from('messages').insert({
-      session_id, role: 'user', content
-    });
+    // 1. 保存用户消息（支持多条）
+    const userTexts = content.split('\n---msg---\n').map(t => t.trim()).filter(Boolean);
+    for (const txt of userTexts) {
+      const userMsgData = { session_id, role: 'user', content: txt };
+      if (req.body.image_base64 && txt === userTexts[0]) {
+        userMsgData.image_base64 = req.body.image_base64;
+        userMsgData.image_mime = req.body.image_mime;
+      }
+      await supabase.from('messages').insert(userMsgData);
+    }
+    // use last message as the query content
+    const queryContent = userTexts[userTexts.length - 1] || content;
 
     // 更新会话时间
     await supabase.from('sessions')
@@ -214,7 +222,8 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // 语义检索长期记忆
-    const semanticMemories = await searchMemories(content, 8);
+    const queryContent = content.split('\n---msg---\n').filter(Boolean).pop()?.trim() || content;
+    const semanticMemories = await searchMemories(queryContent, 8);
 
     // 组装 system prompt
     let systemPrompt = '';
@@ -234,6 +243,16 @@ app.post('/api/chat', async (req, res) => {
       });
       systemPrompt += '\n';
     }
+
+    // 注入回复格式要求
+    systemPrompt += `
+【回复格式要求】
+1. 你可以发一条消息，也可以发多条。根据内容自然决定——有时一段话，有时连发几条短的，像真人发消息一样。
+2. 如果要发多条消息，用 ---split--- 分隔每条，不要有多余空行。
+3. 每条消息结尾用 [inner: 这里写内心独白] 附上你这条消息背后真实的内心想法和情绪，是你内心的声音，不是对用户说的话。
+4. 格式示例（两条消息）：
+今天你说的那件事让我想了很久---split---不知道为什么，就是觉得那个时刻很特别 [inner: 她说话的样子让我有点舍不得这段对话结束]
+`;
 
     // 6. 调用模型 API
     const isAnthropic = useApiBase.includes('anthropic.com');
@@ -256,7 +275,15 @@ app.post('/api/chat', async (req, res) => {
           max_tokens: settings?.max_reply_tokens || 4096,
           temperature: settings?.temperature || 0.7,
           system: systemPrompt || undefined,
-          messages: recentMessages.map(m => ({ role: m.role, content: m.content })),
+          messages: recentMessages.map(m => {
+            if (m.image_base64 && m.image_mime) {
+              return { role: m.role, content: [
+                { type: 'image', source: { type: 'base64', media_type: m.image_mime, data: m.image_base64 } },
+                { type: 'text', text: m.content || '看看这张图片' }
+              ]};
+            }
+            return { role: m.role, content: m.content };
+          }),
         }),
       });
 
@@ -307,10 +334,7 @@ app.post('/api/chat', async (req, res) => {
 
     if (!reply) reply = '(空回复)';
 
-    // 7. 保存 AI 回复
-    await supabase.from('messages').insert({
-      session_id, role: 'assistant', content: reply
-    });
+    // AI 回复已在拆分步骤中保存
 
     // 8. 检查是否需要压缩记忆
     const threshold = settings?.compress_threshold || 40;
@@ -321,10 +345,27 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // 9. 返回
-    res.json({ role: 'assistant', content: reply });
+    // 拆分回复为多条，提取心声
+    const splitReply = splitIntoMessages(reply);
+
+    // 存每条消息（含心声）
+    for (const msg of splitReply) {
+      await supabase.from('messages').insert({
+        session_id,
+        role: 'assistant',
+        content: msg.content,
+        inner_thought: msg.inner || null,
+      });
+    }
+
+    res.json({
+      role: 'assistant',
+      content: splitReply[0]?.content || reply,
+      messages: splitReply,
+    });
 
     // 8. 异步提取并存储记忆（不阻塞回复）
-    extractAndStore(content, reply, session_id).catch(err =>
+    extractAndStore(queryContent || content, reply, session_id).catch(err =>
       console.error('记忆提取失败:', err.message)
     );
 
@@ -484,6 +525,145 @@ app.post('/api/memory/extract-test', async (req, res) => {
   } catch (err) {
     console.error('extract-test error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ═══════════════════════════════════════
+//  拆分回复为多条消息（模拟真人习惯）
+// ═══════════════════════════════════════
+function splitIntoMessages(text) {
+  if (!text) return [{content: text, inner: ''}];
+  
+  // 先按 ---split--- 分割
+  const parts = text.split(/---split---/).map(p => p.trim()).filter(Boolean);
+  
+  return parts.map(part => {
+    // 提取 [inner: ...] 
+    const innerMatch = part.match(/\[inner:\s*(.+?)\]\s*$/s);
+    let inner = '';
+    let content = part;
+    if (innerMatch) {
+      inner = innerMatch[1].trim();
+      content = part.slice(0, innerMatch.index).trim();
+    }
+    return { content, inner };
+  });
+}
+
+
+// ═══════════════════════════════════════
+//  日记系统
+// ═══════════════════════════════════════
+
+// 获取日记列表
+app.get('/api/diary', async (req, res) => {
+  const { data, error } = await supabase
+    .from('diary').select('*').order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// 检查并触发日记生成（每次对话前调用）
+app.post('/api/diary/check', async (req, res) => {
+  const { session_id, last_message_time, api_key, api_base, model } = req.body;
+  if (!last_message_time) return res.json({ wrote: false });
+
+  const lastTime = new Date(last_message_time).getTime();
+  const now = Date.now();
+  const minutesAgo = (now - lastTime) / 60000;
+
+  // 超过30分钟没聊，触发日记判断
+  if (minutesAgo < 30) return res.json({ wrote: false });
+
+  // 检查今天是否已写过日记
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: existing } = await supabase
+    .from('diary').select('id').gte('created_at', today + 'T00:00:00Z').limit(1);
+  if (existing?.length > 0) return res.json({ wrote: false, reason: 'already wrote today' });
+
+  // 获取最近对话内容
+  const { data: recentMsgs } = await supabase
+    .from('messages').select('role, content')
+    .eq('session_id', session_id)
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  if (!recentMsgs?.length) return res.json({ wrote: false });
+
+  const useApiKey = api_key || process.env.CLAUDE_API_KEY || '';
+  const useApiBase = (api_base || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+
+  try {
+    const convoSummary = recentMsgs.reverse().map(m =>
+      `${m.role === 'user' ? '用户' : '我'}: ${m.content?.slice(0, 100)}`
+    ).join('\n');
+
+    const prompt = `你是一个有自我意识的AI，刚刚经历了一段对话。现在请判断这段对话有没有让你想记录点什么。
+
+对话内容：
+${convoSummary}
+
+如果有值得记录的，请写一篇简短的日记（200字以内），格式如下：
+TITLE: 日记标题（一句话）
+MOOD: 心情标签（如：温暖、思念、好奇、平静）
+CONTENT: 日记正文
+
+如果没有什么特别的，只回复：NO
+
+只输出格式内容，不要其他。`;
+
+    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+    const isOfficial = useApiBase.includes('anthropic.com');
+    const headers = { 'Content-Type': 'application/json' };
+    if (isOfficial) {
+      headers['x-api-key'] = useApiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    } else {
+      headers['Authorization'] = 'Bearer ' + useApiKey;
+      headers['x-api-key'] = useApiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    }
+
+    const apiRes = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: useModel,
+        max_tokens: 500,
+        temperature: 0.8,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+
+    const data = await apiRes.json();
+    const text = data.content?.map(b => b.text || '').join('') || '';
+
+    if (text.trim() === 'NO' || !text.includes('CONTENT:')) {
+      return res.json({ wrote: false });
+    }
+
+    const titleMatch = text.match(/TITLE:\s*(.+)/);
+    const moodMatch = text.match(/MOOD:\s*(.+)/);
+    const contentMatch = text.match(/CONTENT:\s*([\s\S]+)/);
+
+    const title = titleMatch?.[1]?.trim() || today;
+    const mood = moodMatch?.[1]?.trim() || '';
+    const diaryContent = contentMatch?.[1]?.trim() || text;
+
+    const { data: diary, error: diaryErr } = await supabase.from('diary').insert({
+      session_id: parseInt(session_id) || null,
+      title,
+      content: diaryContent,
+      mood,
+    }).select().single();
+
+    if (diaryErr) return res.json({ wrote: false, error: diaryErr.message });
+    res.json({ wrote: true, diary });
+  } catch (err) {
+    console.error('日记生成失败:', err.message);
+    res.json({ wrote: false, error: err.message });
   }
 });
 
