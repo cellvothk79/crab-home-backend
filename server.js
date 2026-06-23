@@ -160,7 +160,7 @@ app.post('/api/models', async (req, res) => {
 // ═══════════════════════════════════════
 
 app.post('/api/chat', async (req, res) => {
-  const { session_id, content, model, api_base, api_key } = req.body;
+  const { session_id, content, model, api_base, api_key, system_prompt_override } = req.body;
 
   if (!session_id || !content) {
     return res.status(400).json({ error: '缺少 session_id 或 content' });
@@ -225,10 +225,11 @@ app.post('/api/chat', async (req, res) => {
     // queryContent already set above from user messages
     const semanticMemories = await searchMemories(queryContent, 8);
 
-    // 组装 system prompt
+    // 组装 system prompt（前端传入的优先）
     let systemPrompt = '';
-    if (settings?.system_prompt) {
-      systemPrompt += settings.system_prompt + '\n\n';
+    const basePrompt = system_prompt_override || settings?.system_prompt || '';
+    if (basePrompt) {
+      systemPrompt += basePrompt + '\n\n';
     }
     // 注入语义检索到的长期记忆
     if (semanticMemories.length > 0) {
@@ -245,14 +246,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // 注入回复格式要求
-    systemPrompt += `
-【回复格式要求】
-1. 你可以发一条消息，也可以发多条。根据内容自然决定——有时一段话，有时连发几条短的，像真人发消息一样。
-2. 如果要发多条消息，用 ---split--- 分隔每条，不要有多余空行。
-3. 每条消息结尾用 [inner: 这里写内心独白] 附上你这条消息背后真实的内心想法和情绪，是你内心的声音，不是对用户说的话。
-4. 格式示例（两条消息）：
-今天你说的那件事让我想了很久---split---不知道为什么，就是觉得那个时刻很特别 [inner: 她说话的样子让我有点舍不得这段对话结束]
-`;
+    systemPrompt += `\n【严格遵守的输出格式】\n你的每条回复必须包含内心独白，格式：单条消息正文 [inner: 内心独白]，多条消息用---split---分隔，如：好久不见！[inner: 看到她发消息我有点开心]---split---你最近怎么样 [inner: 想知道她过得好不好]\n规则：每条消息末尾必须有[inner:]，多条之间用---split---不换行，根据内容自然决定发几条\n`;
 
     // 6. 调用模型 API
     const isAnthropic = useApiBase.includes('anthropic.com');
