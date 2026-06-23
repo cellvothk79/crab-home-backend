@@ -472,12 +472,17 @@ app.post('/api/memory/extract-test', async (req, res) => {
   const { userText, botReply } = req.body;
   if (!userText || !botReply) return res.status(400).json({ error: '缺少参数' });
   try {
+    // 先同步等待存储完成（测试用，正式流程是异步的）
     await require('./services/memory').extractAndStore(userText, botReply, 'test-session');
-    const { data } = await require('@supabase/supabase-js')
-      .createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
-      .from('memories').select('*').order('created_at', { ascending: false }).limit(3);
-    res.json({ ok: true, latestMemories: data });
+    // 等一下确保写入完成
+    await new Promise(r => setTimeout(r, 2000));
+    const { data, error } = await supabase
+      .from('memories').select('id, summary, valence, arousal, memory_type, weight, source, created_at')
+      .order('created_at', { ascending: false }).limit(5);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, count: data?.length || 0, latestMemories: data });
   } catch (err) {
+    console.error('extract-test error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
