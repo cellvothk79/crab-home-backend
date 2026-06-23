@@ -222,7 +222,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // 语义检索长期记忆
-    const queryContent = content.split('\n---msg---\n').filter(Boolean).pop()?.trim() || content;
+    // queryContent already set above from user messages
     const semanticMemories = await searchMemories(queryContent, 8);
 
     // 组装 system prompt
