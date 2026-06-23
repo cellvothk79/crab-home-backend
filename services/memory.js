@@ -196,7 +196,7 @@ AI：${botReply}
       if (!item.summary) continue;
       try {
         const embedding = await getEmbedding(item.summary);
-        await supabase.from('memories').insert({
+        const insertData = {
           summary: item.summary,
           valence: Math.max(-1, Math.min(1, item.valence || 0)),
           arousal: Math.max(0, Math.min(1, item.arousal || 0.5)),
@@ -205,10 +205,16 @@ AI：${botReply}
           last_accessed: new Date().toISOString(),
           embedding,
           source: 'chat',
-          source_session_id: sessionId,
           tags: Array.isArray(item.tags) ? item.tags : [],
-        });
-        console.log('记忆存储:', item.summary.slice(0, 30));
+        };
+        // source_session_id 只有原始 schema 里有，兼容处理
+        if (sessionId) insertData.source_session_id = sessionId;
+        const { error: insertErr } = await supabase.from('memories').insert(insertData);
+        if (insertErr) {
+          console.error('记忆写入失败:', insertErr.message, insertErr.details);
+        } else {
+          console.log('记忆存储:', item.summary.slice(0, 30));
+        }
       } catch (e) {
         console.error('记忆存储失败:', e.message);
       }
