@@ -197,7 +197,18 @@ app.post('/api/chat', async (req, res) => {
     // 5. 组装上下文
     // 限制最近 N 轮
     const maxRounds = settings?.max_context_rounds || 20;
-    const recentMessages = history.slice(-(maxRounds * 2));
+    let recentMessages = (history || []).slice(-(maxRounds * 2));
+    // 确保至少有当前这条用户消息
+    if (recentMessages.length === 0) {
+      recentMessages = [{ role: 'user', content }];
+    }
+    // 确保消息数组以 user 开头（Anthropic 要求）
+    while (recentMessages.length > 0 && recentMessages[0].role === 'assistant') {
+      recentMessages = recentMessages.slice(1);
+    }
+    if (recentMessages.length === 0) {
+      recentMessages = [{ role: 'user', content }];
+    }
 
     // 组装 system prompt
     let systemPrompt = '';
