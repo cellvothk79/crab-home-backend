@@ -466,7 +466,7 @@ async function compressMemory(sessionId, settings) {
       'Authorization': 'Bearer ' + dsKey,
     },
     body: JSON.stringify({
-      model: process.env.DEEPSEEK_MODEL || '[正向]DeepSeek-V4Pro',
+      model: process.env.DEEPSEEK_MODEL || 'deepseek-v3',
       max_tokens: 1000,
       temperature: 0.3,
       messages: [
@@ -622,7 +622,7 @@ async function generateDiary(session_id, apiKey, apiBase, model) {
   // 日记固定用 DeepSeek，走中转站，不跟随前端模型
   const useApiKey = process.env.DEEPSEEK_API_KEY || apiKey || process.env.CLAUDE_API_KEY || '';
   const useApiBase = (process.env.DEEPSEEK_API_BASE || apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
-  const useModel = '[正向]DeepSeek-V4Pro';
+  const useModel = 'deepseek-v3';
   const today = new Date().toISOString().slice(0, 10);
 
   const { data: recentMsgs } = await supabase
@@ -753,7 +753,7 @@ AI：${botReply.slice(0, 80)}
     const r = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey },
-      body: JSON.stringify({ model: '[正向]DeepSeek-V4Pro', max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: 'deepseek-v3', max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
     });
     const data = await r.json();
     return data.choices?.[0]?.message?.content?.trim() || '';
