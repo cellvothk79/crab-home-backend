@@ -113,6 +113,11 @@ async function extractAndStore(userText, botReply, sessionId) {
   const apiKey = DEEPSEEK_API_KEY || process.env.CLAUDE_API_KEY || '';
   if (!apiKey || !OPENAI_API_KEY) return;
 
+  // 跳过摘要格式的内容（压缩摘要不应进记忆库）
+  if (userText?.startsWith('以下是对话内容的简洁摘要') ||
+      botReply?.startsWith('以下是对话内容的简洁摘要') ||
+      userText?.length > 2000 || botReply?.length > 2000) return;
+
   const isDeepSeek = !!DEEPSEEK_API_KEY;
   const apiBase = isDeepSeek ? DEEPSEEK_API_BASE :
     (process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
@@ -190,6 +195,16 @@ AI：${botReply}
     // 为每条记忆生成 embedding，去重比对后存入数据库
     for (const item of items) {
       if (!item.summary) continue;
+      // 过滤掉太长的（摘要/总结类），记忆应该是简洁的一句话
+      if (item.summary.length > 150) {
+        console.log('记忆过长跳过:', item.summary.slice(0, 30));
+        continue;
+      }
+      // 过滤掉明显是摘要格式的
+      if (item.summary.includes('以下是') || item.summary.includes('简洁摘要') || item.summary.includes('对话内容')) {
+        console.log('记忆格式异常跳过:', item.summary.slice(0, 30));
+        continue;
+      }
       try {
         const embedding = await getEmbedding(item.summary);
 
