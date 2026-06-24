@@ -119,6 +119,7 @@ app.post('/api/memories/batch-extract', async (req, res) => {
       .from('messages')
       .select('role, content, created_at')
       .eq('session_id', parseInt(session_id))
+      .in('role', ['user', 'assistant'])
       .order('created_at', { ascending: true })
       .range(offset, offset + limit * 2 - 1);
 
