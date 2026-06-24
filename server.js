@@ -153,13 +153,17 @@ app.post('/api/memories/batch-extract', async (req, res) => {
 });
 
 app.get('/api/messages/:sessionId', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 200;
+  const offset = parseInt(req.query.offset) || 0;
   const { data, error } = await supabase
     .from('messages').select('*')
     .eq('session_id', req.params.sessionId)
     .eq('visible', true)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
   if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+  // 反转回正序
+  res.json((data || []).reverse());
 });
 
 
