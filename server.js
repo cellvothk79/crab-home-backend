@@ -466,7 +466,7 @@ async function compressMemory(sessionId, settings) {
       'Authorization': 'Bearer ' + dsKey,
     },
     body: JSON.stringify({
-      model: process.env.DIARY_MODEL || '[正向1m]deepseek-v4Pro',
+      model: 'deepseek-chat',
       max_tokens: 1000,
       temperature: 0.3,
       messages: [
@@ -619,10 +619,10 @@ app.get('/api/diary', async (req, res) => {
 
 // 核心日记生成函数（check 和 force 共用）
 async function generateDiary(session_id, apiKey, apiBase, model) {
-  // 日记固定用 DeepSeek，走中转站，不跟随前端模型
-  const useApiKey = process.env.DEEPSEEK_API_KEY || apiKey || process.env.CLAUDE_API_KEY || '';
-  const useApiBase = (process.env.DEEPSEEK_API_BASE || apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
-  const useModel = process.env.DIARY_MODEL || '[正向1m]deepseek-v4Pro';
+  // 日记固定用 DeepSeek 官方 API，不跟随前端模型
+  const useApiKey = process.env.DEEPSEEK_API_KEY || '';
+  const useApiBase = 'https://api.deepseek.com';
+  const useModel = 'deepseek-chat';
   const today = new Date().toISOString().slice(0, 10);
 
   const { data: recentMsgs } = await supabase
@@ -651,9 +651,9 @@ CONTENT: 日记正文
 
 只输出格式内容，不要其他。`;
 
-  // Claude 中转走 /messages 格式
-  const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
-  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey, 'x-api-key': useApiKey, 'anthropic-version': '2023-06-01' };
+  // DeepSeek 官方走 /chat/completions
+  const apiUrl = 'https://api.deepseek.com/v1/chat/completions';
+  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey };
 
   console.log("[diary] 调用 API:", apiUrl, "模型:", useModel);
   let apiRes;
@@ -673,8 +673,7 @@ CONTENT: 日记正文
   }
 
   const data = await apiRes.json();
-  // 兼容 Anthropic 和 OpenAI 格式
-  const text = data.content?.map(b => b.text || '').join('') || data.choices?.[0]?.message?.content || '';
+  const text = data.choices?.[0]?.message?.content || '';
 
   if (text.trim() === 'NO' || !text.includes('CONTENT:')) {
     return { wrote: false, reason: 'AI decided nothing worth writing' };
@@ -744,16 +743,15 @@ async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
 AI：${botReply.slice(0, 80)}
 只输出那一句话，不要其他。`;
 
-    // 心声固定用 DeepSeek，走中转站，不跟随前端模型
-    const useApiKey = process.env.DEEPSEEK_API_KEY || apiKey || '';
-    const useApiBase = (process.env.DEEPSEEK_API_BASE || apiBase || '').replace(/\/+$/, '');
-    if (!useApiKey || !useApiBase) return '';
+    // 心声固定用 DeepSeek 官方 API
+    const useApiKey = process.env.DEEPSEEK_API_KEY || '';
+    const apiUrl = 'https://api.deepseek.com/v1/chat/completions';
+    if (!useApiKey) return '';
 
-    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/chat/completions' : useApiBase + '/v1/chat/completions';
     const r = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey },
-      body: JSON.stringify({ model: process.env.DIARY_MODEL || '[正向1m]deepseek-v4Pro', max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
     });
     const data = await r.json();
     return data.choices?.[0]?.message?.content?.trim() || '';
