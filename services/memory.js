@@ -196,7 +196,7 @@ AI：${botReply}
         // ── 去重：搜索相似度 > 0.85 的已有记忆 ──
         const { data: similar } = await supabase.rpc('search_memories', {
           query_embedding: embedding,
-          match_threshold: 0.75,
+          match_threshold: 0.70,
           match_count: 1,
         });
 
@@ -260,4 +260,4 @@ function formatMemoriesForPrompt(memories) {
   return '【长期记忆】以下是关于用户的重要记忆，请自然地记住这些，不要刻意提及"记忆"这个词：\n' + lines.join('\n') + '\n';
 }
 
-module.exports = { searchMemories, extractAndStore, formatMemoriesForPrompt, getEmbedding };嗯
+module.exports = { searchMemories, extractAndStore, formatMemoriesForPrompt, getEmbedding };
