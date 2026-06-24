@@ -62,6 +62,67 @@ app.delete('/api/sessions/:id', async (req, res) => {
 // ═══════════════════════════════════════
 
 // 获取某会话的消息
+// 批量导入消息（小手机聊天记录导入）
+app.post('/api/messages/import', async (req, res) => {
+  const { session_id, messages: msgs } = req.body;
+  if (!session_id || !msgs?.length) return res.status(400).json({ error: '参数缺失' });
+
+  const rows = msgs.map(m => ({
+    session_id: parseInt(session_id),
+    role: m.role,
+    content: m.content,
+    created_at: m.created_at,
+  }));
+
+  const { error } = await supabase.from('messages').insert(rows);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ imported: rows.length });
+});
+
+// 批量记忆提取（对导入的历史消息跑记忆提取）
+app.post('/api/memories/batch-extract', async (req, res) => {
+  const { session_id, offset = 0, limit = 20 } = req.body;
+  if (!session_id) return res.status(400).json({ error: '缺少 session_id' });
+
+  try {
+    // 取一批相邻的对话对（user + assistant 各一条算一轮）
+    const { data: msgs, error } = await supabase
+      .from('messages')
+      .select('role, content, created_at')
+      .eq('session_id', parseInt(session_id))
+      .order('created_at', { ascending: true })
+      .range(offset, offset + limit * 2 - 1);
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (!msgs?.length) return res.json({ done: true, extracted: 0 });
+
+    // 把消息两两配对成对话轮次
+    let extracted = 0;
+    const pairs = [];
+    for (let i = 0; i < msgs.length - 1; i++) {
+      if (msgs[i].role === 'user' && msgs[i+1].role === 'assistant') {
+        pairs.push({ user: msgs[i].content, bot: msgs[i+1].content });
+        i++; // 跳过已配对的 assistant
+      }
+    }
+
+    // 对每对对话跑记忆提取（串行，避免 API 过载）
+    for (const pair of pairs) {
+      if (!pair.user || !pair.bot) continue;
+      await extractAndStore(pair.user, pair.bot, session_id);
+      extracted++;
+      // 小延迟避免 DeepSeek 限流
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    const done = msgs.length < limit * 2;
+    res.json({ done, extracted, next_offset: offset + msgs.length });
+  } catch(e) {
+    console.error('批量提取失败:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/messages/:sessionId', async (req, res) => {
   const { data, error } = await supabase
     .from('messages').select('*')
