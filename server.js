@@ -79,7 +79,36 @@ app.post('/api/messages/import', async (req, res) => {
   res.json({ imported: rows.length });
 });
 
-// 批量记忆提取（对导入的历史消息跑记忆提取）
+// 批量导入已有记忆（小手机 coreMemories + episodicMemories）
+app.post('/api/memories/import', async (req, res) => {
+  const { memories } = req.body;
+  if (!memories?.length) return res.status(400).json({ error: '缺少记忆数据' });
+
+  let imported = 0;
+  for (const m of memories) {
+    try {
+      const { getEmbedding } = require('./services/memory');
+      const embedding = await getEmbedding(m.summary);
+      const { error } = await supabase.from('memories').insert({
+        summary: m.summary,
+        memory_type: m.memory_type || 'episodic',
+        category: m.category || 'daily',
+        weight: m.weight || 1.0,
+        valence: m.valence || 0,
+        arousal: m.arousal || 0.5,
+        embedding,
+        source: 'import',
+        tags: m.tags || [],
+        last_accessed: new Date().toISOString(),
+      });
+      if (!error) imported++;
+      await new Promise(r => setTimeout(r, 200));
+    } catch(e) {
+      console.error('记忆导入失败:', e.message);
+    }
+  }
+  res.json({ imported });
+});
 app.post('/api/memories/batch-extract', async (req, res) => {
   const { session_id, offset = 0, limit = 20 } = req.body;
   if (!session_id) return res.status(400).json({ error: '缺少 session_id' });
