@@ -105,7 +105,7 @@ app.put('/api/settings', async (req, res) => {
 
 app.get('/api/memories', async (req, res) => {
   const { data, error } = await supabase
-    .from('memories').select('*').order('created_at', { ascending: true });
+    .from('memories').select('*').is('deleted_at', null).order('created_at', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
@@ -182,11 +182,15 @@ app.post('/api/chat', async (req, res) => {
   try {
     // 1. 保存用户消息（支持多条）
     const userTexts = content.split('\n---msg---\n').map(t => t.trim()).filter(Boolean);
+    const quoteContent = req.body.quote_content || null;
     for (const txt of userTexts) {
       const userMsgData = { session_id, role: 'user', content: txt };
       if (req.body.image_base64 && txt === userTexts[0]) {
         userMsgData.image_base64 = req.body.image_base64;
         userMsgData.image_mime = req.body.image_mime;
+      }
+      if (quoteContent && txt === userTexts[0]) {
+        userMsgData.quote_content = quoteContent;
       }
       await supabase.from('messages').insert(userMsgData);
     }
@@ -217,6 +221,16 @@ app.post('/api/chat', async (req, res) => {
     // 限制最近 N 轮
     const maxRounds = settings?.max_context_rounds || 20;
     let recentMessages = (history || []).slice(-(maxRounds * 2));
+    // inject quote context into last user message
+    if (quoteContent && recentMessages.length > 0) {
+      const last = recentMessages[recentMessages.length - 1];
+      if (last.role === 'user') {
+        recentMessages = [...recentMessages.slice(0, -1), {
+          ...last,
+          content: `[引用: "${quoteContent}"]\n${last.content}`
+        }];
+      }
+    }
     // 确保至少有当前这条用户消息
     if (recentMessages.length === 0) {
       recentMessages = [{ role: 'user', content }];
@@ -360,6 +374,15 @@ app.post('/api/chat', async (req, res) => {
         inner_thought: msg.inner || null,
       });
     }
+
+    // 生成顶部动态心声（异步，不阻塞）
+    generateMoodLine(queryContent || content, reply, useApiKey, useApiBase, useModel)
+      .then(mood => {
+        if (mood) {
+          // 存到 settings 表的 mood_line 字段（复用settings表）
+          supabase.from('settings').update({ mood_line: mood }).eq('id', 1).then(() => {});
+        }
+      }).catch(() => {});
 
     res.json({
       role: 'assistant',
@@ -668,6 +691,141 @@ CONTENT: 日记正文
     console.error('日记生成失败:', err.message);
     res.json({ wrote: false, error: err.message });
   }
+});
+
+
+// ═══════════════════════════════════════
+//  生成顶部动态心声
+// ═══════════════════════════════════════
+async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
+  try {
+    const prompt = `根据这段对话，用一句话（20字以内）写出AI此刻内心浮现的一句话，像自言自语，不是对用户说的，不要引号：
+用户：${userText.slice(0, 50)}
+AI：${botReply.slice(0, 80)}
+只输出那一句话，不要其他。`;
+
+    const apiUrl = apiBase.endsWith('/v1') ? apiBase + '/messages' : apiBase + '/v1/messages';
+    const isOfficial = apiBase.includes('anthropic.com');
+    const headers = { 'Content-Type': 'application/json' };
+    if (isOfficial) { headers['x-api-key'] = apiKey; headers['anthropic-version'] = '2023-06-01'; }
+    else { headers['Authorization'] = 'Bearer ' + apiKey; headers['x-api-key'] = apiKey; headers['anthropic-version'] = '2023-06-01'; }
+
+    const r = await fetch(apiUrl, {
+      method: 'POST', headers,
+      body: JSON.stringify({ model, max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const data = await r.json();
+    return data.content?.map(b => b.text || '').join('').trim() || '';
+  } catch(e) { return ''; }
+}
+
+// 获取当前心声
+app.get('/api/mood', async (req, res) => {
+  try {
+    // try settings table first
+    const { data: settings } = await supabase.from('settings').select('mood_line').limit(1).single();
+    if (settings?.mood_line) return res.json({ mood: settings.mood_line });
+
+    // fallback: random memory
+    const { data: mems } = await supabase
+      .from('memories').select('summary').order('last_accessed', { ascending: false }).limit(20);
+    if (mems?.length) {
+      const m = mems[Math.floor(Math.random() * mems.length)];
+      return res.json({ mood: m.summary });
+    }
+    res.json({ mood: '' });
+  } catch(e) { res.json({ mood: '' }); }
+});
+
+// 从记忆随机生成心声（用于没有对话时）
+app.get('/api/mood/random', async (req, res) => {
+  try {
+    const { data: mems } = await supabase
+      .from('memories').select('summary, valence').order('weight', { ascending: false }).limit(30);
+    if (!mems?.length) return res.json({ mood: '' });
+    // prefer positive memories
+    const positive = mems.filter(m => (m.valence || 0) > 0.3);
+    const pool = positive.length ? positive : mems;
+    const m = pool[Math.floor(Math.random() * pool.length)];
+    res.json({ mood: m.summary });
+  } catch(e) { res.json({ mood: '' }); }
+});
+
+
+// ═══════════════════════════════════════
+//  记忆管理接口
+// ═══════════════════════════════════════
+
+// 获取所有记忆（支持搜索）
+app.get('/api/memories/all', async (req, res) => {
+  const { q } = req.query;
+  let query = supabase.from('memories')
+    .select('id, summary, valence, arousal, memory_type, weight, last_accessed, source, tags, created_at')
+    .order('created_at', { ascending: false });
+  if (q) query = query.ilike('summary', `%${q}%`);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// 编辑记忆
+app.patch('/api/memories/:id', async (req, res) => {
+  const { summary, memory_type } = req.body;
+  const updates = { updated_at: new Date().toISOString() };
+  if (summary !== undefined) updates.summary = summary;
+  if (memory_type !== undefined) updates.memory_type = memory_type;
+  const { data, error } = await supabase.from('memories').update(updates).eq('id', req.params.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// 软删除记忆（移入回收站）
+app.delete('/api/memories/:id', async (req, res) => {
+  const { error } = await supabase.from('memories')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// 回收站列表
+app.get('/api/memories/trash', async (req, res) => {
+  const { data, error } = await supabase.from('memories')
+    .select('id, summary, memory_type, created_at, deleted_at')
+    .not('deleted_at', 'is', null)
+    .order('deleted_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// 从回收站恢复
+app.post('/api/memories/:id/restore', async (req, res) => {
+  const { error } = await supabase.from('memories')
+    .update({ deleted_at: null })
+    .eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// 永久删除（清空回收站用）
+app.delete('/api/memories/:id/permanent', async (req, res) => {
+  const { error } = await supabase.from('memories').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// 记忆统计
+app.get('/api/memories/stats', async (req, res) => {
+  const { data: all } = await supabase.from('memories').select('id, memory_type, created_at').is('deleted_at', null);
+  const { data: trash } = await supabase.from('memories').select('id').not('deleted_at', 'is', null);
+  const total = all?.length || 0;
+  const core = all?.filter(m => m.memory_type === 'core').length || 0;
+  const episodic = all?.filter(m => m.memory_type === 'episodic').length || 0;
+  const trashCount = trash?.length || 0;
+  // recent 7 days
+  const week = new Date(Date.now() - 7*24*3600*1000).toISOString();
+  const recent = all?.filter(m => m.created_at > week).length || 0;
+  res.json({ total, core, episodic, trashCount, recent });
 });
 
 
