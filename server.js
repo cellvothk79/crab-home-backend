@@ -121,7 +121,10 @@ app.post('/api/memories', async (req, res) => {
 
 // 删除记忆
 app.delete('/api/memories/:id', async (req, res) => {
-  const { error } = await supabase.from('memories').delete().eq('id', req.params.id);
+  // soft delete - move to trash
+  const { error } = await supabase.from('memories')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
@@ -292,15 +295,31 @@ app.post('/api/chat', async (req, res) => {
           max_tokens: settings?.max_reply_tokens || 4096,
           temperature: settings?.temperature || 0.7,
           system: systemPrompt || undefined,
-          messages: recentMessages.map(m => {
-            if (m.image_base64 && m.image_mime) {
-              return { role: m.role, content: [
-                { type: 'image', source: { type: 'base64', media_type: m.image_mime, data: m.image_base64 } },
-                { type: 'text', text: m.content || '看看这张图片' }
-              ]};
+          messages: (() => {
+            // build messages, ensure no trailing assistant message
+            let msgs = recentMessages
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .map(m => {
+                if (m.image_base64 && m.image_mime) {
+                  return { role: m.role, content: [
+                    { type: 'image', source: { type: 'base64', media_type: m.image_mime, data: m.image_base64 } },
+                    { type: 'text', text: m.content || '看看这张图片' }
+                  ]};
+                }
+                return { role: m.role, content: m.content || '' };
+              })
+              .filter(m => m.content && (typeof m.content === 'string' ? m.content.trim() : m.content.length > 0));
+            // remove trailing assistant messages (Anthropic doesn't allow)
+            while (msgs.length > 0 && msgs[msgs.length-1].role === 'assistant') {
+              msgs.pop();
             }
-            return { role: m.role, content: m.content };
-          }),
+            // ensure starts with user
+            while (msgs.length > 0 && msgs[0].role === 'assistant') {
+              msgs.shift();
+            }
+            if (msgs.length === 0) msgs = [{ role: 'user', content: queryContent || content }];
+            return msgs;
+          })(),
         }),
       });
 
