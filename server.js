@@ -466,7 +466,7 @@ async function compressMemory(sessionId, settings) {
       'Authorization': 'Bearer ' + dsKey,
     },
     body: JSON.stringify({
-      model: process.env.DEEPSEEK_MODEL || 'deepseek-v3',
+      model: process.env.DIARY_MODEL || '[正向]DeepSeek-V4Pro',
       max_tokens: 1000,
       temperature: 0.3,
       messages: [
@@ -622,7 +622,7 @@ async function generateDiary(session_id, apiKey, apiBase, model) {
   // 日记固定用 DeepSeek，走中转站，不跟随前端模型
   const useApiKey = process.env.DEEPSEEK_API_KEY || apiKey || process.env.CLAUDE_API_KEY || '';
   const useApiBase = (process.env.DEEPSEEK_API_BASE || apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
-  const useModel = 'deepseek-v3';
+  const useModel = process.env.DIARY_MODEL || '[正向]DeepSeek-V4Pro';
   const today = new Date().toISOString().slice(0, 10);
 
   const { data: recentMsgs } = await supabase
@@ -651,9 +651,9 @@ CONTENT: 日记正文
 
 只输出格式内容，不要其他。`;
 
-  // DeepSeek 走 OpenAI 兼容格式（/chat/completions）
-  const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/chat/completions' : useApiBase + '/v1/chat/completions';
-  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey };
+  // Claude 中转走 /messages 格式
+  const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey, 'x-api-key': useApiKey, 'anthropic-version': '2023-06-01' };
 
   console.log("[diary] 调用 API:", apiUrl, "模型:", useModel);
   let apiRes;
@@ -673,8 +673,8 @@ CONTENT: 日记正文
   }
 
   const data = await apiRes.json();
-  // 兼容 OpenAI 格式
-  const text = data.choices?.[0]?.message?.content || data.content?.map(b => b.text || '').join('') || '';
+  // 兼容 Anthropic 和 OpenAI 格式
+  const text = data.content?.map(b => b.text || '').join('') || data.choices?.[0]?.message?.content || '';
 
   if (text.trim() === 'NO' || !text.includes('CONTENT:')) {
     return { wrote: false, reason: 'AI decided nothing worth writing' };
@@ -753,7 +753,7 @@ AI：${botReply.slice(0, 80)}
     const r = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey },
-      body: JSON.stringify({ model: 'deepseek-v3', max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: process.env.DIARY_MODEL || '[正向]DeepSeek-V4Pro', max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
     });
     const data = await r.json();
     return data.choices?.[0]?.message?.content?.trim() || '';
