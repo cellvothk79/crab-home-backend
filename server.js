@@ -783,30 +783,46 @@ app.get('/api/mood/random', async (req, res) => {
   } catch(e) { res.json({ mood: '' }); }
 });
 
-// 按需生成心声（用户点击触发）
+// 按需生成心声（用户点击触发，支持传消息内容直接生成）
 app.post('/api/mood/generate', async (req, res) => {
-  const { session_id } = req.body;
-  if (!session_id) return res.status(400).json({ error: '缺少 session_id' });
+  const { session_id, content } = req.body;
 
   try {
-    // 取最近几条对话
-    const { data: recentMsgs } = await supabase
-      .from('messages').select('role, content')
-      .eq('session_id', session_id)
-      .order('created_at', { ascending: false })
-      .limit(6);
+    let userText = '', botText = '';
 
-    if (!recentMsgs?.length) return res.json({ mood: '' });
+    if (content) {
+      // 直接传了消息内容（单条消息心声）
+      botText = content;
+      // 取最近一条用户消息作为上下文
+      if (session_id) {
+        const { data: recentMsgs } = await supabase
+          .from('messages').select('role, content')
+          .eq('session_id', session_id)
+          .eq('role', 'user')
+          .order('created_at', { ascending: false })
+          .limit(1);
+        userText = recentMsgs?.[0]?.content || '';
+      }
+    } else if (session_id) {
+      // 从最近对话提取（顶部此刻状态用）
+      const { data: recentMsgs } = await supabase
+        .from('messages').select('role, content')
+        .eq('session_id', session_id)
+        .order('created_at', { ascending: false })
+        .limit(6);
+      if (!recentMsgs?.length) return res.json({ mood: '' });
+      const msgs = [...recentMsgs].reverse();
+      userText = msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
+      botText = msgs.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';
+    } else {
+      return res.json({ mood: '' });
+    }
 
-    const msgs = [...recentMsgs].reverse();
-    const lastUser = msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
-    const lastBot = msgs.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';
+    if (!botText) return res.json({ mood: '' });
 
-    if (!lastUser && !lastBot) return res.json({ mood: '' });
-
-    const mood = await generateMoodLine(lastUser, lastBot);
-    if (mood) {
-      // 更新 settings 表缓存
+    const mood = await generateMoodLine(userText, botText);
+    if (mood && !content) {
+      // 只有顶部状态才更新 settings 缓存
       supabase.from('settings').update({ mood_line: mood }).eq('id', 1).catch(() => {});
     }
     res.json({ mood });
