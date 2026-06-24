@@ -619,9 +619,10 @@ app.get('/api/diary', async (req, res) => {
 
 // 核心日记生成函数（check 和 force 共用）
 async function generateDiary(session_id, apiKey, apiBase, model) {
-  const useApiKey = apiKey || process.env.CLAUDE_API_KEY || '';
-  const useApiBase = (apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
-  const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+  // 日记固定用 DeepSeek，走中转站，不跟随前端模型
+  const useApiKey = process.env.DEEPSEEK_API_KEY || apiKey || process.env.CLAUDE_API_KEY || '';
+  const useApiBase = (process.env.DEEPSEEK_API_BASE || apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const useModel = 'deepseek-chat';
   const today = new Date().toISOString().slice(0, 10);
 
   const { data: recentMsgs } = await supabase
@@ -650,24 +651,16 @@ CONTENT: 日记正文
 
 只输出格式内容，不要其他。`;
 
-  const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
-  const isOfficial = useApiBase.includes('anthropic.com');
-  const headers = { 'Content-Type': 'application/json' };
-  if (isOfficial) {
-    headers['x-api-key'] = useApiKey;
-    headers['anthropic-version'] = '2023-06-01';
-  } else {
-    headers['Authorization'] = 'Bearer ' + useApiKey;
-    headers['x-api-key'] = useApiKey;
-    headers['anthropic-version'] = '2023-06-01';
-  }
+  // DeepSeek 走 OpenAI 兼容格式（/chat/completions）
+  const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/chat/completions' : useApiBase + '/v1/chat/completions';
+  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey };
 
   console.log("[diary] 调用 API:", apiUrl, "模型:", useModel);
   let apiRes;
   try {
     apiRes = await fetch(apiUrl, {
-      method: "POST", headers,
-      body: JSON.stringify({ model: useModel, max_tokens: 500, temperature: 0.8, messages: [{ role: "user", content: prompt }] }),
+      method: 'POST', headers,
+      body: JSON.stringify({ model: useModel, max_tokens: 500, temperature: 0.8, messages: [{ role: 'user', content: prompt }] }),
     });
   } catch (fetchErr) {
     console.error("[diary] fetch 网络错误:", fetchErr.message, "目标URL:", apiUrl);
@@ -680,7 +673,8 @@ CONTENT: 日记正文
   }
 
   const data = await apiRes.json();
-  const text = data.content?.map(b => b.text || '').join('') || '';
+  // 兼容 OpenAI 格式
+  const text = data.choices?.[0]?.message?.content || data.content?.map(b => b.text || '').join('') || '';
 
   if (text.trim() === 'NO' || !text.includes('CONTENT:')) {
     return { wrote: false, reason: 'AI decided nothing worth writing' };
@@ -750,18 +744,19 @@ async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
 AI：${botReply.slice(0, 80)}
 只输出那一句话，不要其他。`;
 
-    const apiUrl = apiBase.endsWith('/v1') ? apiBase + '/messages' : apiBase + '/v1/messages';
-    const isOfficial = apiBase.includes('anthropic.com');
-    const headers = { 'Content-Type': 'application/json' };
-    if (isOfficial) { headers['x-api-key'] = apiKey; headers['anthropic-version'] = '2023-06-01'; }
-    else { headers['Authorization'] = 'Bearer ' + apiKey; headers['x-api-key'] = apiKey; headers['anthropic-version'] = '2023-06-01'; }
+    // 心声固定用 DeepSeek，走中转站，不跟随前端模型
+    const useApiKey = process.env.DEEPSEEK_API_KEY || apiKey || '';
+    const useApiBase = (process.env.DEEPSEEK_API_BASE || apiBase || '').replace(/\/+$/, '');
+    if (!useApiKey || !useApiBase) return '';
 
+    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/chat/completions' : useApiBase + '/v1/chat/completions';
     const r = await fetch(apiUrl, {
-      method: 'POST', headers,
-      body: JSON.stringify({ model, max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey },
+      body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
     });
     const data = await r.json();
-    return data.content?.map(b => b.text || '').join('').trim() || '';
+    return data.choices?.[0]?.message?.content?.trim() || '';
   } catch(e) { return ''; }
 }
 
