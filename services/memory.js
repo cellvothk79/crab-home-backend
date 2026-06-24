@@ -110,12 +110,11 @@ async function searchMemories(userText, limit = 8) {
 //  提取并存储记忆（每轮对话后异步调用）
 // ═══════════════════════════════════════
 async function extractAndStore(userText, botReply, sessionId) {
-  // 需要 DeepSeek 或对话模型来提取
   const apiKey = DEEPSEEK_API_KEY || process.env.CLAUDE_API_KEY || '';
   if (!apiKey || !OPENAI_API_KEY) return;
 
   const isDeepSeek = !!DEEPSEEK_API_KEY;
-  const apiBase = isDeepSeek ? DEEPSEEK_API_BASE : 
+  const apiBase = isDeepSeek ? DEEPSEEK_API_BASE :
     (process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
   const model = isDeepSeek ? 'deepseek-chat' : (process.env.CLAUDE_MODEL || 'claude-sonnet-4-6');
 
@@ -126,20 +125,20 @@ async function extractAndStore(userText, botReply, sessionId) {
 AI：${botReply}
 
 请以 JSON 数组格式返回记忆条目，每条包含：
-- summary: 记忆内容（一句话，30字以内，用第三人称描述用户，如"用户喜欢..."）
+- summary: 记忆内容（用叙事带情境的方式写，20-40字，第一人称描述AI视角，如"她提到想吃豆芽拌饭时语气很馋，这是她反复说起的食物，应该是真的很喜欢"，不要写成标签式的"用户喜欢XX"）
 - valence: 情感效价 -1到1（负面到正面）
 - arousal: 唤醒度 0到1（平静到激动）
-- memory_type: "core"（重要的身份信息/偏好/关系）或 "episodic"（普通事件）
+- memory_type: "core"（重要的身份信息/深层偏好/关系认知）或 "episodic"（普通事件/日常细节）
+- category: "daily"（日常生活/情感/偏好/习惯）或 "work"（工作/项目/技术）或 "event"（具体事件/约定/计划）
 - tags: 标签数组，如 ["食物", "偏好"]
 
-如果这段对话没有值得记忆的信息（比如只是打招呼、闲聊），返回空数组 []。
+如果这段对话没有值得记忆的信息（比如只是打招呼、闲聊、简单问答），返回空数组 []。
 只返回 JSON，不要其他内容。`;
 
   try {
     let reply = '';
 
     if (isDeepSeek) {
-      // DeepSeek / OpenAI 兼容接口
       const res = await fetch(apiBase + '/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -150,14 +149,12 @@ AI：${botReply}
           model,
           max_tokens: 800,
           temperature: 0.3,
-          response_format: { type: 'json_object' },
           messages: [{ role: 'user', content: prompt }],
         }),
       });
       const data = await res.json();
       reply = data.choices?.[0]?.message?.content || '[]';
     } else {
-      // Anthropic 接口
       const apiUrl = apiBase.endsWith('/v1') ? apiBase + '/messages' : apiBase + '/v1/messages';
       const res = await fetch(apiUrl, {
         method: 'POST',
@@ -182,7 +179,6 @@ AI：${botReply}
     let items = [];
     try {
       const parsed = JSON.parse(clean);
-      // 兼容直接数组或包在对象里
       items = Array.isArray(parsed) ? parsed : (parsed.memories || parsed.items || []);
     } catch (e) {
       console.log('记忆提取解析失败:', clean.slice(0, 100));
@@ -191,25 +187,52 @@ AI：${botReply}
 
     if (!items.length) return;
 
-    // 为每条记忆生成 embedding 并存入数据库
+    // 为每条记忆生成 embedding，去重比对后存入数据库
     for (const item of items) {
       if (!item.summary) continue;
       try {
         const embedding = await getEmbedding(item.summary);
+
+        // ── 去重：搜索相似度 > 0.85 的已有记忆 ──
+        const { data: similar } = await supabase.rpc('search_memories', {
+          query_embedding: embedding,
+          match_threshold: 0.85,
+          match_count: 1,
+        });
+
+        if (similar && similar.length > 0) {
+          // 已有相似记忆，更新而不是新建
+          const existing = similar[0];
+          const merged = existing.summary + '；' + item.summary;
+          const mergedEmbedding = await getEmbedding(merged.slice(0, 200));
+          await supabase.from('memories').update({
+            summary: merged.slice(0, 200),
+            embedding: mergedEmbedding,
+            valence: ((existing.valence || 0) + (item.valence || 0)) / 2,
+            arousal: Math.max(existing.arousal || 0.5, item.arousal || 0.5),
+            last_accessed: new Date().toISOString(),
+            weight: Math.min((existing.weight || 1) + 0.2, 3.0), // 被强化，权重增加
+          }).eq('id', existing.id);
+          console.log('记忆强化:', existing.summary.slice(0, 30));
+          continue;
+        }
+
+        // ── 新记忆，直接写入 ──
         const insertData = {
           summary: item.summary,
           valence: Math.max(-1, Math.min(1, item.valence || 0)),
           arousal: Math.max(0, Math.min(1, item.arousal || 0.5)),
           memory_type: item.memory_type === 'core' ? 'core' : 'episodic',
+          category: ['daily', 'work', 'event'].includes(item.category) ? item.category : 'daily',
           weight: 1.0,
           last_accessed: new Date().toISOString(),
           embedding,
           source: 'chat',
           tags: Array.isArray(item.tags) ? item.tags : [],
         };
-        // source_session_id 是 bigint，只传数字类型
         const sessionIdNum = parseInt(sessionId);
         if (!isNaN(sessionIdNum)) insertData.source_session_id = sessionIdNum;
+
         const { error: insertErr } = await supabase.from('memories').insert(insertData);
         if (insertErr) {
           console.error('记忆写入失败:', insertErr.message, insertErr.details);
