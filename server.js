@@ -761,6 +761,7 @@ app.get('/api/memories/all', async (req, res) => {
   const { q } = req.query;
   let query = supabase.from('memories')
     .select('id, summary, valence, arousal, memory_type, weight, last_accessed, source, tags, created_at')
+    .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (q) query = query.ilike('summary', `%${q}%`);
   const { data, error } = await query;
@@ -771,11 +772,16 @@ app.get('/api/memories/all', async (req, res) => {
 // 编辑记忆
 app.patch('/api/memories/:id', async (req, res) => {
   const { summary, memory_type } = req.body;
-  const updates = { updated_at: new Date().toISOString() };
+  const updates = {};
   if (summary !== undefined) updates.summary = summary;
   if (memory_type !== undefined) updates.memory_type = memory_type;
+  if (!Object.keys(updates).length) return res.status(400).json({ error: '没有要更新的字段' });
+  console.log('更新记忆', req.params.id, updates);
   const { data, error } = await supabase.from('memories').update(updates).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    console.error('记忆更新失败:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
   res.json(data);
 });
 
@@ -794,8 +800,11 @@ app.get('/api/memories/trash', async (req, res) => {
     .select('id, summary, memory_type, created_at, deleted_at')
     .not('deleted_at', 'is', null)
     .order('deleted_at', { ascending: false });
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+  if (error) {
+    console.error('回收站查询失败:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
+  res.json(data || []);
 });
 
 // 从回收站恢复
@@ -826,6 +835,36 @@ app.get('/api/memories/stats', async (req, res) => {
   const week = new Date(Date.now() - 7*24*3600*1000).toISOString();
   const recent = all?.filter(m => m.created_at > week).length || 0;
   res.json({ total, core, episodic, trashCount, recent });
+});
+
+
+// ═══════════════════════════════════════
+//  前端配置持久化（存到Supabase）
+// ═══════════════════════════════════════
+app.get('/api/config', async (req, res) => {
+  const { data, error } = await supabase.from('settings').select('*').limit(1).single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({
+    system_prompt: data.system_prompt || '',
+    temperature: data.temperature || 0.7,
+    max_context_rounds: data.max_context_rounds || 20,
+    model: data.model_name || '',
+    api_base: data.api_base || '',
+    mood_line: data.mood_line || '',
+  });
+});
+
+app.put('/api/config', async (req, res) => {
+  const { model, api_base, system_prompt, temperature, max_context_rounds } = req.body;
+  const updates = { updated_at: new Date().toISOString() };
+  if (model !== undefined) updates.model_name = model;
+  if (api_base !== undefined) updates.api_base = api_base;
+  if (system_prompt !== undefined) updates.system_prompt = system_prompt;
+  if (temperature !== undefined) updates.temperature = temperature;
+  if (max_context_rounds !== undefined) updates.max_context_rounds = max_context_rounds;
+  const { data, error } = await supabase.from('settings').update(updates).eq('id', 1).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 
