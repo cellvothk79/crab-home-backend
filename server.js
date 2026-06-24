@@ -585,10 +585,13 @@ async function compressMemory(sessionId, settings) {
 
   if (!summary) return;
 
-  // 保存摘要
-  await supabase.from('memories').insert({
-    summary,
-    source_session_id: sessionId,
+  // 保存摘要为系统消息（不存入记忆库，避免被召回后影响对话）
+  await supabase.from('messages').insert({
+    session_id: sessionId,
+    role: 'system_summary',
+    content: summary,
+    visible: true,
+    created_at: new Date().toISOString(),
   });
 
   // 标记旧消息为不可见
