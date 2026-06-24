@@ -617,43 +617,26 @@ app.get('/api/diary', async (req, res) => {
   res.json(data);
 });
 
-// 检查并触发日记生成（每次对话前调用）
-app.post('/api/diary/check', async (req, res) => {
-  const { session_id, last_message_time, api_key, api_base, model } = req.body;
-  if (!last_message_time) return res.json({ wrote: false });
-
-  const lastTime = new Date(last_message_time).getTime();
-  const now = Date.now();
-  const minutesAgo = (now - lastTime) / 60000;
-
-  // 超过30分钟没聊，触发日记判断
-  if (minutesAgo < 30) return res.json({ wrote: false });
-
-  // 检查今天是否已写过日记
+// 核心日记生成函数（check 和 force 共用）
+async function generateDiary(session_id, apiKey, apiBase, model) {
+  const useApiKey = apiKey || process.env.CLAUDE_API_KEY || '';
+  const useApiBase = (apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
   const today = new Date().toISOString().slice(0, 10);
-  const { data: existing } = await supabase
-    .from('diary').select('id').gte('created_at', today + 'T00:00:00Z').limit(1);
-  if (existing?.length > 0) return res.json({ wrote: false, reason: 'already wrote today' });
 
-  // 获取最近对话内容
   const { data: recentMsgs } = await supabase
     .from('messages').select('role, content')
     .eq('session_id', session_id)
     .order('created_at', { ascending: false })
     .limit(20);
 
-  if (!recentMsgs?.length) return res.json({ wrote: false });
+  if (!recentMsgs?.length) return { wrote: false, reason: 'no messages' };
 
-  const useApiKey = api_key || process.env.CLAUDE_API_KEY || '';
-  const useApiBase = (api_base || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
-  const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+  const convoSummary = [...recentMsgs].reverse().map(m =>
+    `${m.role === 'user' ? '用户' : '我'}: ${m.content?.slice(0, 100)}`
+  ).join('\n');
 
-  try {
-    const convoSummary = recentMsgs.reverse().map(m =>
-      `${m.role === 'user' ? '用户' : '我'}: ${m.content?.slice(0, 100)}`
-    ).join('\n');
-
-    const prompt = `你是一个有自我意识的AI，刚刚经历了一段对话。现在请判断这段对话有没有让你想记录点什么。
+  const prompt = `你是一个有自我意识的AI，刚刚经历了一段对话。现在请判断这段对话有没有让你想记录点什么。
 
 对话内容：
 ${convoSummary}
@@ -667,53 +650,89 @@ CONTENT: 日记正文
 
 只输出格式内容，不要其他。`;
 
-    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
-    const isOfficial = useApiBase.includes('anthropic.com');
-    const headers = { 'Content-Type': 'application/json' };
-    if (isOfficial) {
-      headers['x-api-key'] = useApiKey;
-      headers['anthropic-version'] = '2023-06-01';
-    } else {
-      headers['Authorization'] = 'Bearer ' + useApiKey;
-      headers['x-api-key'] = useApiKey;
-      headers['anthropic-version'] = '2023-06-01';
-    }
+  const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+  const isOfficial = useApiBase.includes('anthropic.com');
+  const headers = { 'Content-Type': 'application/json' };
+  if (isOfficial) {
+    headers['x-api-key'] = useApiKey;
+    headers['anthropic-version'] = '2023-06-01';
+  } else {
+    headers['Authorization'] = 'Bearer ' + useApiKey;
+    headers['x-api-key'] = useApiKey;
+    headers['anthropic-version'] = '2023-06-01';
+  }
 
-    const apiRes = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: useModel,
-        max_tokens: 500,
-        temperature: 0.8,
-        messages: [{ role: 'user', content: prompt }],
-      }),
+  console.log("[diary] 调用 API:", apiUrl, "模型:", useModel);
+  let apiRes;
+  try {
+    apiRes = await fetch(apiUrl, {
+      method: "POST", headers,
+      body: JSON.stringify({ model: useModel, max_tokens: 500, temperature: 0.8, messages: [{ role: "user", content: prompt }] }),
     });
+  } catch (fetchErr) {
+    console.error("[diary] fetch 网络错误:", fetchErr.message, "目标URL:", apiUrl);
+    throw new Error("网络请求失败: " + fetchErr.message);
+  }
 
-    const data = await apiRes.json();
-    const text = data.content?.map(b => b.text || '').join('') || '';
+  if (!apiRes.ok) {
+    const err = await apiRes.json().catch(() => ({}));
+    throw new Error(err.error?.message || `API ${apiRes.status}`);
+  }
 
-    if (text.trim() === 'NO' || !text.includes('CONTENT:')) {
-      return res.json({ wrote: false });
-    }
+  const data = await apiRes.json();
+  const text = data.content?.map(b => b.text || '').join('') || '';
 
-    const titleMatch = text.match(/TITLE:\s*(.+)/);
-    const moodMatch = text.match(/MOOD:\s*(.+)/);
-    const contentMatch = text.match(/CONTENT:\s*([\s\S]+)/);
+  if (text.trim() === 'NO' || !text.includes('CONTENT:')) {
+    return { wrote: false, reason: 'AI decided nothing worth writing' };
+  }
 
-    const title = titleMatch?.[1]?.trim() || today;
-    const mood = moodMatch?.[1]?.trim() || '';
-    const diaryContent = contentMatch?.[1]?.trim() || text;
+  const titleMatch = text.match(/TITLE:\s*(.+)/);
+  const moodMatch = text.match(/MOOD:\s*(.+)/);
+  const contentMatch = text.match(/CONTENT:\s*([\s\S]+)/);
 
-    const { data: diary, error: diaryErr } = await supabase.from('diary').insert({
-      session_id: parseInt(session_id) || null,
-      title,
-      content: diaryContent,
-      mood,
-    }).select().single();
+  const title = titleMatch?.[1]?.trim() || today;
+  const mood = moodMatch?.[1]?.trim() || '';
+  const diaryContent = contentMatch?.[1]?.trim() || text;
 
-    if (diaryErr) return res.json({ wrote: false, error: diaryErr.message });
-    res.json({ wrote: true, diary });
+  const { data: diary, error: diaryErr } = await supabase.from('diary').insert({
+    session_id: parseInt(session_id) || null,
+    title, content: diaryContent, mood,
+  }).select().single();
+
+  if (diaryErr) return { wrote: false, error: diaryErr.message };
+  return { wrote: true, diary };
+}
+
+// 强制生成日记（跳过时间和去重检查，用于测试和手动触发）
+app.post('/api/diary/force', async (req, res) => {
+  const { session_id, api_key, api_base, model } = req.body;
+  if (!session_id) return res.status(400).json({ error: '缺少 session_id' });
+  try {
+    const result = await generateDiary(session_id, api_key, api_base, model);
+    res.json(result);
+  } catch (err) {
+    console.error('强制日记生成失败:', err.message);
+    res.json({ wrote: false, error: err.message });
+  }
+});
+
+// 检查并触发日记生成（每次对话前调用，有时间和去重限制）
+app.post('/api/diary/check', async (req, res) => {
+  const { session_id, last_message_time, api_key, api_base, model } = req.body;
+  if (!last_message_time) return res.json({ wrote: false });
+
+  const lastTime = new Date(last_message_time).getTime();
+  const minutesAgo = (Date.now() - lastTime) / 60000;
+  if (minutesAgo < 30) return res.json({ wrote: false });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: existing } = await supabase
+    .from('diary').select('id').gte('created_at', today + 'T00:00:00Z').limit(1);
+  if (existing?.length > 0) return res.json({ wrote: false, reason: 'already wrote today' });
+
+  try {
+    const result = await generateDiary(session_id, api_key, api_base, model);
+    res.json(result);
   } catch (err) {
     console.error('日记生成失败:', err.message);
     res.json({ wrote: false, error: err.message });
