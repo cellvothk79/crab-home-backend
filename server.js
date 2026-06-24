@@ -402,14 +402,7 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    // 生成顶部动态心声（异步，不阻塞）
-    generateMoodLine(queryContent || content, reply, useApiKey, useApiBase, useModel)
-      .then(mood => {
-        if (mood) {
-          // 存到 settings 表的 mood_line 字段（复用settings表）
-          supabase.from('settings').update({ mood_line: mood }).eq('id', 1).then(() => {});
-        }
-      }).catch(() => {});
+    // 生成顶部动态心声已改为按需生成，不在此自动触发
 
     res.json({
       role: 'assistant',
@@ -788,6 +781,39 @@ app.get('/api/mood/random', async (req, res) => {
     const m = pool[Math.floor(Math.random() * pool.length)];
     res.json({ mood: m.summary });
   } catch(e) { res.json({ mood: '' }); }
+});
+
+// 按需生成心声（用户点击触发）
+app.post('/api/mood/generate', async (req, res) => {
+  const { session_id } = req.body;
+  if (!session_id) return res.status(400).json({ error: '缺少 session_id' });
+
+  try {
+    // 取最近几条对话
+    const { data: recentMsgs } = await supabase
+      .from('messages').select('role, content')
+      .eq('session_id', session_id)
+      .order('created_at', { ascending: false })
+      .limit(6);
+
+    if (!recentMsgs?.length) return res.json({ mood: '' });
+
+    const msgs = [...recentMsgs].reverse();
+    const lastUser = msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
+    const lastBot = msgs.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';
+
+    if (!lastUser && !lastBot) return res.json({ mood: '' });
+
+    const mood = await generateMoodLine(lastUser, lastBot);
+    if (mood) {
+      // 更新 settings 表缓存
+      supabase.from('settings').update({ mood_line: mood }).eq('id', 1).catch(() => {});
+    }
+    res.json({ mood });
+  } catch(e) {
+    console.error('按需心声生成失败:', e.message);
+    res.json({ mood: '', error: e.message });
+  }
 });
 
 
