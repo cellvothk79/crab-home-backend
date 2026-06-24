@@ -265,6 +265,15 @@ app.post('/api/chat', async (req, res) => {
     if (basePrompt) {
       systemPrompt += basePrompt + '\n\n';
     }
+
+    // 注入当前时间
+    const now = new Date();
+    const timeStr = now.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric', month: 'long', day: 'numeric',
+      weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false
+    });
+    systemPrompt += `【当前时间】${timeStr}\n\n`;
     // 注入语义检索到的长期记忆
     if (semanticMemories.length > 0) {
       systemPrompt += formatMemoriesForPrompt(semanticMemories);
