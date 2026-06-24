@@ -184,18 +184,20 @@ app.post('/api/chat', async (req, res) => {
 
   try {
     // 1. 保存用户消息（支持多条）
+    // 注意：image_base64 不存入 supabase（字段可能不存在且数据太大），只在本次 API 调用中使用
     const userTexts = content.split('\n---msg---\n').map(t => t.trim()).filter(Boolean);
     const quoteContent = req.body.quote_content || null;
+    const imageBase64 = req.body.image_base64 || null;
+    const imageMime = req.body.image_mime || 'image/jpeg';
     for (const txt of userTexts) {
       const userMsgData = { session_id, role: 'user', content: txt };
-      if (req.body.image_base64 && txt === userTexts[0]) {
-        userMsgData.image_base64 = req.body.image_base64;
-        userMsgData.image_mime = req.body.image_mime;
-      }
       if (quoteContent && txt === userTexts[0]) {
         userMsgData.quote_content = quoteContent;
       }
-      await supabase.from('messages').insert(userMsgData);
+      const { error: insertErr } = await supabase.from('messages').insert(userMsgData);
+      if (insertErr) {
+        console.error('用户消息保存失败:', insertErr.message);
+      }
     }
     // use last message as the query content
     const queryContent = userTexts[userTexts.length - 1] || content;
@@ -242,6 +244,12 @@ app.post('/api/chat', async (req, res) => {
     while (recentMessages.length > 0 && recentMessages[0].role === 'assistant') {
       recentMessages = recentMessages.slice(1);
     }
+    // 确保消息数组以 user 结尾（Anthropic 要求，不允许 assistant prefill）
+    while (recentMessages.length > 0 && recentMessages[recentMessages.length - 1].role === 'assistant') {
+      recentMessages.pop();
+    }
+    // 过滤空内容消息
+    recentMessages = recentMessages.filter(m => m.content && m.content.trim());
     if (recentMessages.length === 0) {
       recentMessages = [{ role: 'user', content }];
     }
@@ -279,6 +287,34 @@ app.post('/api/chat', async (req, res) => {
     // 智能拼接路径：如果地址已经带了 /v1 就不重复加
     const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
 
+    // 统一构建消息数组（两个路径共用）
+    function buildCleanMessages(withImage) {
+      let msgs = recentMessages
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .filter(m => m.content && m.content.trim());
+      // 去掉开头的 assistant
+      while (msgs.length > 0 && msgs[0].role === 'assistant') msgs.shift();
+      // 去掉结尾的 assistant
+      while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') msgs.pop();
+      // 兜底
+      if (msgs.length === 0) msgs = [{ role: 'user', content: queryContent || content }];
+      // 如果有图片，附加到最后一条 user 消息
+      if (withImage && imageBase64) {
+        const lastUserIdx = msgs.map(m => m.role).lastIndexOf('user');
+        if (lastUserIdx >= 0) {
+          const m = msgs[lastUserIdx];
+          msgs[lastUserIdx] = {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: imageMime, data: imageBase64 } },
+              { type: 'text', text: m.content || '看看这张图片' }
+            ]
+          };
+        }
+      }
+      return msgs;
+    }
+
     let reply = '';
 
     if (isAnthropic) {
@@ -295,31 +331,7 @@ app.post('/api/chat', async (req, res) => {
           max_tokens: settings?.max_reply_tokens || 4096,
           temperature: settings?.temperature || 0.7,
           system: systemPrompt || undefined,
-          messages: (() => {
-            // build messages, ensure no trailing assistant message
-            let msgs = recentMessages
-              .filter(m => m.role === 'user' || m.role === 'assistant')
-              .map(m => {
-                if (m.image_base64 && m.image_mime) {
-                  return { role: m.role, content: [
-                    { type: 'image', source: { type: 'base64', media_type: m.image_mime, data: m.image_base64 } },
-                    { type: 'text', text: m.content || '看看这张图片' }
-                  ]};
-                }
-                return { role: m.role, content: m.content || '' };
-              })
-              .filter(m => m.content && (typeof m.content === 'string' ? m.content.trim() : m.content.length > 0));
-            // remove trailing assistant messages (Anthropic doesn't allow)
-            while (msgs.length > 0 && msgs[msgs.length-1].role === 'assistant') {
-              msgs.pop();
-            }
-            // ensure starts with user
-            while (msgs.length > 0 && msgs[0].role === 'assistant') {
-              msgs.shift();
-            }
-            if (msgs.length === 0) msgs = [{ role: 'user', content: queryContent || content }];
-            return msgs;
-          })(),
+          messages: buildCleanMessages(true),
         }),
       });
 
@@ -332,11 +344,7 @@ app.post('/api/chat', async (req, res) => {
       reply = data.content?.map(b => b.text || '').join('') || '';
 
     } else {
-      // OpenAI 兼容接口（中转站、DeepSeek 等）
-      const msgs = [];
-      if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
-      recentMessages.forEach(m => msgs.push({ role: m.role, content: m.content }));
-
+      // 中转站接口（Anthropic 格式，需要同样的消息清理）
       const apiRes = await fetch(apiUrl, {
         method: 'POST',
         headers: {
@@ -350,7 +358,7 @@ app.post('/api/chat', async (req, res) => {
           max_tokens: settings?.max_reply_tokens || 4096,
           temperature: settings?.temperature || 0.7,
           system: systemPrompt || undefined,
-          messages: recentMessages.map(m => ({ role: m.role, content: m.content })),
+          messages: buildCleanMessages(true),
         }),
       });
 
