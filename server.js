@@ -1157,7 +1157,7 @@ app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
 
 // ElevenLabs TTS 文字转语音
 app.post('/api/voice/tts', async (req, res) => {
-  const { text } = req.body;
+  const { text, emotion } = req.body;
   if (!text) return res.status(400).json({ error: '缺少文字内容' });
 
   const elevenKey = process.env.ELEVENLABS_API_KEY;
@@ -1165,7 +1165,34 @@ app.post('/api/voice/tts', async (req, res) => {
 
   if (!elevenKey) return res.status(500).json({ error: '未配置 ELEVENLABS_API_KEY' });
 
+  // 1. 文本预处理：数字/符号转口语
+  function preprocessTTS(raw) {
+    return raw
+      .replace(/(\d{4})-(\d{2})-(\d{2})/g, (_, y, m, d) => `${y}年${parseInt(m)}月${parseInt(d)}日`)
+      .replace(/(\d+):(\d{2})/g, (_, h, m) => `${parseInt(h)}点${m === '00' ? '整' : parseInt(m) + '分'}`)
+      .replace(/￥([\d.]+)/g, (_, n) => `${n}元`)
+      .replace(/\$([\d.]+)/g, (_, n) => `${n}美元`)
+      .replace(/(\d+)%/g, (_, n) => `${n}百分之`)
+      .replace(/Ctrl\+C/gi, '复制').replace(/Ctrl\+V/gi, '粘贴').replace(/Ctrl\+Z/gi, '撤销')
+      .slice(0, 500);
+  }
+
+  // 2. 情绪 → ElevenLabs Audio Tag
+  function emotionToTag(e) {
+    const map = {
+      '开心': '[cheerfully]', '兴奋': '[excitedly]',
+      '难过': '[sadly]', '疲惫': '[tiredly]',
+      '撒娇': '[softly]', '生气': '[firmly]',
+      '平静': '[calmly]',
+    };
+    return map[e] || '[softly]';
+  }
+
   try {
+    const cleanText = preprocessTTS(text);
+    const tag = emotionToTag(emotion || '平静');
+    const ttsText = `${tag} ${cleanText}`;
+
     const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: {
@@ -1173,9 +1200,14 @@ app.post('/api/voice/tts', async (req, res) => {
         'xi-api-key': elevenKey,
       },
       body: JSON.stringify({
-        text: text.slice(0, 500),
+        text: ttsText,
         model_id: 'eleven_multilingual_v2',
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        voice_settings: {
+          stability: 0.28,
+          similarity_boost: 0.75,
+          style: 0.88,
+          use_speaker_boost: true,
+        },
       }),
     });
 
