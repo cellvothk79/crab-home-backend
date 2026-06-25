@@ -1073,6 +1073,110 @@ app.put('/api/config', async (req, res) => {
 });
 
 
+// ═══════════════════════════════════════
+//  语音功能
+// ═══════════════════════════════════════
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+// Whisper 语音转文字 + 情绪识别
+app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '没有收到音频文件' });
+
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) return res.status(500).json({ error: '未配置 OPENAI_API_KEY' });
+
+  try {
+    // 1. Whisper 转文字
+    const FormData = require('form-data');
+    const fd = new FormData();
+    fd.append('file', req.file.buffer, { filename: 'voice.webm', contentType: req.file.mimetype });
+    fd.append('model', 'whisper-1');
+    fd.append('language', 'zh');
+
+    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + openaiKey, ...fd.getHeaders() },
+      body: fd,
+    });
+
+    if (!whisperRes.ok) {
+      const err = await whisperRes.json().catch(() => ({}));
+      throw new Error(err.error?.message || 'Whisper 失败');
+    }
+
+    const whisperData = await whisperRes.json();
+    const text = whisperData.text?.trim() || '';
+
+    if (!text) return res.json({ text: '', emotion: '' });
+
+    // 2. 情绪识别（用 DeepSeek，轻量快速）
+    let emotion = '';
+    try {
+      const emotionRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          max_tokens: 10,
+          temperature: 0,
+          messages: [{
+            role: 'user',
+            content: `根据这句话判断说话人的情绪，从以下选项选一个：开心、难过、疲惫、撒娇、生气、平静、兴奋。只输出一个词。\n"${text}"`
+          }]
+        }),
+      });
+      const emotionData = await emotionRes.json();
+      emotion = emotionData.choices?.[0]?.message?.content?.trim() || '';
+    } catch(e) {
+      console.log('情绪识别失败，跳过');
+    }
+
+    res.json({ text, emotion });
+  } catch(err) {
+    console.error('语音转写失败:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ElevenLabs TTS 文字转语音
+app.post('/api/voice/tts', async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: '缺少文字内容' });
+
+  const elevenKey = process.env.ELEVENLABS_API_KEY;
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || '9CFLhe6Ni1wD0VC6wLLb';
+
+  if (!elevenKey) return res.status(500).json({ error: '未配置 ELEVENLABS_API_KEY' });
+
+  try {
+    const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'xi-api-key': elevenKey,
+      },
+      body: JSON.stringify({
+        text: text.slice(0, 500),
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    });
+
+    if (!ttsRes.ok) {
+      const err = await ttsRes.json().catch(() => ({}));
+      throw new Error(err.detail?.message || 'ElevenLabs 失败，可能需要充值');
+    }
+
+    const audioBuffer = await ttsRes.arrayBuffer();
+    res.set('Content-Type', 'audio/mpeg');
+    res.send(Buffer.from(audioBuffer));
+  } catch(err) {
+    console.error('TTS 失败:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🦀🦀 我们的家后端运行中 → 端口 ${PORT}`);
