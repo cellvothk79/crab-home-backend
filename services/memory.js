@@ -141,7 +141,8 @@ AI：${botReply}
 - summary: 记忆内容（用叙事带情境的方式写，20-40字，第一人称描述AI视角，如"她提到想吃豆芽拌饭时语气很馋，这是她反复说起的食物，应该是真的很喜欢"，不要写成标签式的"用户喜欢XX"）
 - valence: 情感效价 -1到1（负面到正面）
 - arousal: 唤醒度 0到1（平静到激动）
-- memory_type: "core"（重要的身份信息/深层偏好/关系认知）或 "episodic"（普通事件/日常细节）
+- importance: 重要性 0到1（0.1=极普通日常，0.5=有意义的偏好或事件，0.8=重要的身份信息或关键时刻，1.0=定义性的核心认知）
+- memory_type: "core"（importance>=0.7的重要身份信息/深层偏好/关系认知）或 "episodic"（importance<0.7的普通事件/日常细节）
 - category: "daily"（日常生活/情感/偏好/习惯）或 "work"（工作/项目/技术）或 "event"（具体事件/约定/计划）
 - tags: 标签数组，如 ["食物", "偏好"]
 
@@ -264,13 +265,16 @@ AI：${botReply}
         }
 
         // ── 新记忆，直接写入 ──
+        const importance = Math.max(0, Math.min(1, item.importance || 0.5));
+        // importance 直接决定初始 weight：重要的记忆起点高，不容易被遗忘
+        const initialWeight = 0.5 + importance * 1.5; // 范围 0.5~2.0
         const insertData = {
           summary: item.summary,
           valence: Math.max(-1, Math.min(1, item.valence || 0)),
           arousal: Math.max(0, Math.min(1, item.arousal || 0.5)),
           memory_type: item.memory_type === 'core' ? 'core' : 'episodic',
           category: ['daily', 'work', 'event'].includes(item.category) ? item.category : 'daily',
-          weight: 1.0,
+          weight: initialWeight,
           last_accessed: new Date().toISOString(),
           embedding,
           source: 'chat',
