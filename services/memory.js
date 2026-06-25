@@ -48,13 +48,14 @@ function calcDecayedWeight(memory) {
 
   const arousal = memory.arousal || 0.5;
   const baseWeight = memory.weight || 1.0;
+  const accessCount = memory.access_count || 0;
 
   // 遗忘曲线：高唤醒度衰减更慢
   const decayRate = 0.05 * (1 - arousal * 0.6);
   const timeDecay = Math.exp(-decayRate * daysSinceAccessed);
 
-  // 被访问越多、越近越权重越高
-  const accessBonus = 1 + arousal * 0.8;
+  // 被访问越多权重越高（精确计数版本）
+  const accessBonus = 1 + Math.log1p(accessCount) * 0.3 + arousal * 0.5;
 
   return baseWeight * timeDecay * accessBonus;
 }
@@ -91,13 +92,20 @@ async function searchMemories(userText, limit = 8) {
       .sort((a, b) => b.decayedWeight - a.decayedWeight)
       .slice(0, limit);
 
-    // 更新 last_accessed（异步，不阻塞）
+    // 更新 last_accessed 和 access_count（异步，不阻塞）
     const ids = ranked.map(m => m.id);
-    supabase.from('memories')
-      .update({ last_accessed: new Date().toISOString() })
-      .in('id', ids)
-      .then(() => {})
-      .catch(() => {});
+    // 逐条更新 access_count（Supabase 不支持原子递增，用 rpc 或逐条处理）
+    ids.forEach(id => {
+      const mem = ranked.find(m => m.id === id);
+      supabase.from('memories')
+        .update({
+          last_accessed: new Date().toISOString(),
+          access_count: (mem?.access_count || 0) + 1,
+        })
+        .eq('id', id)
+        .then(() => {})
+        .catch(() => {});
+    });
 
     return ranked;
   } catch (err) {
@@ -216,19 +224,42 @@ AI：${botReply}
         });
 
         if (similar && similar.length > 0) {
-          // 已有相似记忆，更新而不是新建
+          // 已有相似记忆，用 AI 重新提炼而不是分号拼接
           const existing = similar[0];
-          const merged = existing.summary + '；' + item.summary;
-          const mergedEmbedding = await getEmbedding(merged.slice(0, 200));
+          let mergedSummary = existing.summary;
+          try {
+            const mergePrompt = `你是记忆整理助手。把下面两条相似的记忆合并成一句话（40字以内），保留最重要的信息，用叙事带情境的方式写，不要用分号拼接：
+
+记忆1：${existing.summary}
+记忆2：${item.summary}
+
+只输出合并后的一句话，不要其他内容。`;
+
+            const mergeRes = await fetch(DEEPSEEK_API_BASE + '/v1/chat/completions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DEEPSEEK_API_KEY },
+              body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 100, temperature: 0.3, messages: [{ role: 'user', content: mergePrompt }] }),
+            });
+            const mergeData = await mergeRes.json();
+            const refined = mergeData.choices?.[0]?.message?.content?.trim();
+            if (refined && refined.length > 5 && refined.length < 150) {
+              mergedSummary = refined;
+            }
+          } catch(e) {
+            // 合并失败则保留旧的，不拼接
+            console.log('记忆合并提炼失败，保留原有记忆');
+          }
+
+          const mergedEmbedding = await getEmbedding(mergedSummary);
           await supabase.from('memories').update({
-            summary: merged.slice(0, 200),
+            summary: mergedSummary,
             embedding: mergedEmbedding,
             valence: ((existing.valence || 0) + (item.valence || 0)) / 2,
             arousal: Math.max(existing.arousal || 0.5, item.arousal || 0.5),
             last_accessed: new Date().toISOString(),
-            weight: Math.min((existing.weight || 1) + 0.2, 3.0), // 被强化，权重增加
+            weight: Math.min((existing.weight || 1) + 0.2, 3.0),
           }).eq('id', existing.id);
-          console.log('记忆强化:', existing.summary.slice(0, 30));
+          console.log('记忆强化:', mergedSummary.slice(0, 30));
           continue;
         }
 
