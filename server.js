@@ -155,15 +155,21 @@ app.post('/api/memories/batch-extract', async (req, res) => {
 
 app.get('/api/messages/:sessionId', async (req, res) => {
   const limit = parseInt(req.query.limit) || 200;
-  const offset = parseInt(req.query.offset) || 0;
-  const { data, error } = await supabase
+  const before = req.query.before; // 时间戳，加载这个时间之前的消息
+
+  let query = supabase
     .from('messages').select('*')
     .eq('session_id', req.params.sessionId)
-    .eq('visible', true)
+    .in('role', ['user', 'assistant']) // 只返回对话消息，过滤 system_summary
     .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .limit(limit);
+
+  if (before) {
+    query = query.lt('created_at', before);
+  }
+
+  const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
-  // 反转回正序
   res.json((data || []).reverse());
 });
 
@@ -688,17 +694,22 @@ app.post('/api/memory/extract-test', async (req, res) => {
 function splitIntoMessages(text) {
   if (!text) return [{content: text, inner: ''}];
   
-  // 先按 ---split--- 分割
-  const parts = text.split(/---split---/).map(p => p.trim()).filter(Boolean);
+  // 先按 ---split--- 分割（兼容前后有空白的情况）
+  const parts = text.split(/\s*---split---\s*/).map(p => p.trim()).filter(Boolean);
   
   return parts.map(part => {
-    // 提取 [inner: ...] 
-    const innerMatch = part.match(/\[inner:\s*(.+?)\]\s*$/s);
+    // 提取 [inner: ...] —— 必须在消息末尾
+    const innerMatch = part.match(/\s*\[inner:\s*([\s\S]+?)\]\s*$/);
     let inner = '';
     let content = part;
     if (innerMatch) {
       inner = innerMatch[1].trim();
       content = part.slice(0, innerMatch.index).trim();
+    }
+    // 保护：如果 content 为空但 inner 有内容，说明正则匹配错了，恢复原始内容
+    if (!content && inner) {
+      content = part;
+      inner = '';
     }
     return { content, inner };
   });
@@ -880,13 +891,17 @@ app.get('/api/mood', async (req, res) => {
 app.get('/api/mood/random', async (req, res) => {
   try {
     const { data: mems } = await supabase
-      .from('memories').select('summary, valence').order('weight', { ascending: false }).limit(30);
+      .from('memories').select('id, summary, valence')
+      .order('last_accessed', { ascending: false })
+      .limit(50);
     if (!mems?.length) return res.json({ mood: '' });
-    // prefer positive memories
     const positive = mems.filter(m => (m.valence || 0) > 0.3);
-    const pool = positive.length ? positive : mems;
-    const m = pool[Math.floor(Math.random() * pool.length)];
-    res.json({ mood: m.summary });
+    const pool = positive.length >= 3 ? positive : mems;
+    // 避免返回太长的记忆（摘要截短）
+    const shortPool = pool.filter(m => m.summary.length < 50);
+    const finalPool = shortPool.length >= 3 ? shortPool : pool;
+    const m = finalPool[Math.floor(Math.random() * finalPool.length)];
+    res.json({ mood: m.summary.slice(0, 40) });
   } catch(e) { res.json({ mood: '' }); }
 });
 
