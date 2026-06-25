@@ -264,15 +264,32 @@ AI：${botReply}
 }
 
 // ═══════════════════════════════════════
-//  把检索到的记忆格式化成 system prompt 片段
+//  把检索到的记忆格式化成 system prompt 片段（第二阶段：叙事段落注入）
 // ═══════════════════════════════════════
 function formatMemoriesForPrompt(memories) {
   if (!memories || memories.length === 0) return '';
-  const lines = memories.map((m, i) => {
-    const emotion = m.valence > 0.3 ? '😊' : m.valence < -0.3 ? '😔' : '😐';
-    return `${i + 1}. ${m.summary} ${emotion}`;
-  });
-  return '【长期记忆】以下是关于用户的重要记忆，请自然地记住这些，不要刻意提及"记忆"这个词：\n' + lines.join('\n') + '\n';
+
+  // 按 memory_type 分组
+  const core = memories.filter(m => m.memory_type === 'core');
+  const episodic = memories.filter(m => m.memory_type !== 'core');
+
+  const parts = [];
+
+  if (core.length > 0) {
+    // core 记忆：关于她是谁的认知，叙事段落
+    const coreText = core.map(m => m.summary).join('。');
+    parts.push(`关于她这个人，我知道的：${coreText}。`);
+  }
+
+  if (episodic.length > 0) {
+    // episodic 记忆：具体的事和细节，像想起来的片段
+    const episodicText = episodic.map(m => m.summary).join('；');
+    parts.push(`想起来的一些事：${episodicText}。`);
+  }
+
+  if (parts.length === 0) return '';
+
+  return `【想起来的事】\n${parts.join('\n')}\n\n这些是我真实记得的，不用刻意提起，但可以自然地用到对话里。\n`;
 }
 
 module.exports = { searchMemories, extractAndStore, formatMemoriesForPrompt, getEmbedding };
