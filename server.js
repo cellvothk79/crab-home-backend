@@ -1161,8 +1161,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 app.post('/api/call/save', async (req, res) => {
   const { session_id, transcript, duration, started_at, card_content } = req.body;
   console.log('[call/save] session_id:', session_id, 'transcript长度:', transcript?.length, 'duration:', duration);
-  if (!session_id || !transcript?.length) {
-    console.log('[call/save] 跳过：无内容');
+  if (!session_id) {
+    console.log('[call/save] 跳过：无session_id');
     return res.json({ ok: true });
   }
 
