@@ -295,23 +295,22 @@ app.post('/api/chat', async (req, res) => {
   const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
   try {
-    // 1. 保存用户消息（支持多条）
-    // 注意：image_base64 不存入 supabase（字段可能不存在且数据太大），只在本次 API 调用中使用
     const userTexts = content.split('\n---msg---\n').map(t => t.trim()).filter(Boolean);
     const quoteContent = req.body.quote_content || null;
     const imageBase64 = req.body.image_base64 || null;
     const imageMime = req.body.image_mime || 'image/jpeg';
     const isVoice = req.body.is_voice || false;
     const audioUrl = req.body.audio_url || null;
-    for (const txt of userTexts) {
-      const userMsgData = { session_id, role: 'user', content: txt, is_voice: isVoice };
-      if (audioUrl && txt === userTexts[0]) userMsgData.audio_url = audioUrl;
-      if (quoteContent && txt === userTexts[0]) {
-        userMsgData.quote_content = quoteContent;
-      }
-      const { error: insertErr } = await supabase.from('messages').insert(userMsgData);
-      if (insertErr) {
-        console.error('用户消息保存失败:', insertErr.message);
+    const callMode = req.body.call_mode || false;
+
+    // 通话模式不存消息到聊天记录（通话结束后统一存）
+    if (!callMode) {
+      for (const txt of userTexts) {
+        const userMsgData = { session_id, role: 'user', content: txt, is_voice: isVoice };
+        if (audioUrl && txt === userTexts[0]) userMsgData.audio_url = audioUrl;
+        if (quoteContent && txt === userTexts[0]) userMsgData.quote_content = quoteContent;
+        const { error: insertErr } = await supabase.from('messages').insert(userMsgData);
+        if (insertErr) console.error('用户消息保存失败:', insertErr.message);
       }
     }
     // use last message as the query content
@@ -550,15 +549,17 @@ app.post('/api/chat', async (req, res) => {
     // 拆分回复为多条，提取心声
     const splitReply = splitIntoMessages(reply);
 
-    // 存每条消息（含心声和语音标记）
-    for (const msg of splitReply) {
-      await supabase.from('messages').insert({
-        session_id,
-        role: 'assistant',
-        content: msg.content,
-        inner_thought: msg.inner || null,
-        is_voice: msg.voice || false,
-      });
+    // 通话模式不存消息（结束时统一存）
+    if (!callMode) {
+      for (const msg of splitReply) {
+        await supabase.from('messages').insert({
+          session_id,
+          role: 'assistant',
+          content: msg.content,
+          inner_thought: msg.inner || null,
+          is_voice: msg.voice || false,
+        });
+      }
     }
 
     res.json({
@@ -1354,6 +1355,12 @@ app.post('/api/voice/tts', async (req, res) => {
     return map[e] || 'calm';
   }
 
+  // 通话模式用 turbo 模型不上传 Storage，直接返回音频（更快）
+  const isCallMode = req.body?.call_mode || false;
+  const minimaxModel = isCallMode ? 'speech-02-turbo' : 'speech-02-hd';
+  // 使用低延迟端点
+  const minimaxEndpoint = `https://api-uw.minimax.io/v1/t2a_v2?GroupId=${minimaxGroupId}`;
+
   // 如果切了英文，先翻译
   let ttsText = cleanText;
   let translatedText = null;
@@ -1384,14 +1391,14 @@ app.post('/api/voice/tts', async (req, res) => {
   }
 
   try {
-    const ttsRes = await fetch(`https://api.minimaxi.com/v1/t2a_v2?GroupId=${minimaxGroupId}`, {
+    const ttsRes = await fetch(minimaxEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + minimaxKey,
       },
       body: JSON.stringify({
-        model: 'speech-01-turbo',
+        model: minimaxModel,
         text: ttsText,
         stream: false,
         voice_setting: {
@@ -1426,7 +1433,13 @@ app.post('/api/voice/tts', async (req, res) => {
 
     const audioBuffer = Buffer.from(audioBase64, 'hex');
 
-    // 上传到 Supabase Storage 持久化，刷新后仍可播放
+    // 通话模式直接返回二进制，不上传 Storage（更快）
+    if (isCallMode) {
+      res.set('Content-Type', 'audio/mpeg');
+      return res.send(audioBuffer);
+    }
+
+    // 非通话模式上传 Storage 持久化
     try {
       const fileName = `voice_${Date.now()}.mp3`;
       const { error: uploadErr } = await supabase.storage
@@ -1437,7 +1450,6 @@ app.post('/api/voice/tts', async (req, res) => {
         const { data: urlData } = supabase.storage
           .from('voice-messages')
           .getPublicUrl(fileName);
-        // 返回公开 URL
         res.set('Content-Type', 'application/json');
         return res.json({ audioUrl: urlData.publicUrl, translatedText });
       }
@@ -1445,7 +1457,6 @@ app.post('/api/voice/tts', async (req, res) => {
       console.log('Storage 上传失败，降级返回二进制:', storageErr.message);
     }
 
-    // fallback：直接返回二进制
     res.set('Content-Type', 'audio/mpeg');
     res.send(audioBuffer);
   } catch(err) {
