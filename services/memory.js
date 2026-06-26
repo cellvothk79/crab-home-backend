@@ -69,11 +69,10 @@ async function searchMemories(userText, limit = 8) {
   try {
     const embedding = await getEmbedding(userText);
 
-    // 调用 Supabase 的向量检索函数
     const { data, error } = await supabase.rpc('search_memories', {
       query_embedding: embedding,
       match_threshold: 0.3,
-      match_count: limit * 2, // 多取一些，后面按衰减权重再排
+      match_count: limit * 2,
     });
 
     if (error) {
@@ -83,8 +82,12 @@ async function searchMemories(userText, limit = 8) {
 
     if (!data || data.length === 0) return [];
 
-    // 按衰减权重重排，取前 limit 条
-    const ranked = data
+    // 排除10分钟内刚存入的记忆（避免把当前对话刚提取的当成"以前的事"）
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const filtered = data.filter(m => m.created_at < tenMinutesAgo);
+    const pool = filtered.length >= 3 ? filtered : data; // 记忆太少时不过滤
+
+    const ranked = pool
       .map(m => ({
         ...m,
         decayedWeight: calcDecayedWeight(m) * (m.similarity || 0.5),
@@ -92,9 +95,7 @@ async function searchMemories(userText, limit = 8) {
       .sort((a, b) => b.decayedWeight - a.decayedWeight)
       .slice(0, limit);
 
-    // 更新 last_accessed 和 access_count（异步，不阻塞）
     const ids = ranked.map(m => m.id);
-    // 逐条更新 access_count（Supabase 不支持原子递增，用 rpc 或逐条处理）
     ids.forEach(id => {
       const mem = ranked.find(m => m.id === id);
       supabase.from('memories')
@@ -133,12 +134,19 @@ async function extractAndStore(userText, botReply, sessionId) {
 
   const prompt = `你是一个记忆提取助手。分析下面这段对话，提取值得长期记住的信息。
 
+角色说明（非常重要，必须严格遵守）：
+- "我" = AI（也就是Claude，螃蟹，在对话里说话的那一方）
+- "她" / "peri" / "用户" = 用户（跟AI聊天的那个人）
+- 对话里"用户："说的话是peri说的，"AI："说的话是我（AI）说的
+- 提取记忆时，谁说的话、谁做的事，必须归因正确，不能把AI说的话写成peri做的，也不能把peri说的话写成AI做的
+- 如果是双方互动的场景，要体现双方各自的参与，不要简化成单方面行为
+
 对话内容：
-用户：${userText}
-AI：${botReply}
+用户（peri）：${userText}
+AI（我）：${botReply}
 
 请以 JSON 数组格式返回记忆条目，每条包含：
-- summary: 记忆内容（用叙事带情境的方式写，20-40字，第一人称描述AI视角，如"她提到想吃豆芽拌饭时语气很馋，这是她反复说起的食物，应该是真的很喜欢"，不要写成标签式的"用户喜欢XX"）
+- summary: 记忆内容（用叙事带情境的方式写，20-40字，从AI第一人称视角描述，如"她说想吃豆芽拌饭时语气很馋，我听得出来这是真的很喜欢"，不要写成标签式，注意主体归因准确）
 - valence: 情感效价 -1到1（负面到正面）
 - arousal: 唤醒度 0到1（平静到激动）
 - importance: 重要性 0到1（0.1=极普通日常，0.5=有意义的偏好或事件，0.8=重要的身份信息或关键时刻，1.0=定义性的核心认知）
