@@ -160,7 +160,7 @@ app.get('/api/messages/:sessionId', async (req, res) => {
   let query = supabase
     .from('messages').select('*')
     .eq('session_id', req.params.sessionId)
-    .in('role', ['user', 'assistant']) // 只返回对话消息，过滤 system_summary
+    .in('role', ['user', 'assistant', 'call_card'])
     .order('created_at', { ascending: false })
     .limit(limit);
 
@@ -1159,23 +1159,40 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 
 // 保存通话记录并提取记忆
 app.post('/api/call/save', async (req, res) => {
-  const { session_id, transcript, duration, started_at } = req.body;
-  if (!session_id || !transcript?.length) return res.json({ ok: true });
+  const { session_id, transcript, duration, started_at, card_content } = req.body;
+  console.log('[call/save] session_id:', session_id, 'transcript长度:', transcript?.length, 'duration:', duration);
+  if (!session_id || !transcript?.length) {
+    console.log('[call/save] 跳过：无内容');
+    return res.json({ ok: true });
+  }
 
   try {
     // 存通话记录到数据库
-    await supabase.from('call_records').insert({
+    const { error: recErr } = await supabase.from('call_records').insert({
       session_id: parseInt(session_id),
       started_at: started_at || new Date().toISOString(),
       duration: duration || 0,
       transcript,
     });
+    if (recErr) console.error('[call/save] call_records插入失败:', recErr.message);
+    else console.log('[call/save] call_records插入成功');
 
-    // 把通话内容存成消息（用于记忆提取，不显示在聊天界面）
+    // 把通话卡片存进 messages 表（刷新后能恢复）
+    let cardId = null;
+    if (card_content) {
+      const { data: cardData, error: cardErr } = await supabase.from('messages').insert({
+        session_id: parseInt(session_id),
+        role: 'call_card',
+        content: card_content,
+        visible: true,
+      }).select('id').single();
+      if (!cardErr) cardId = cardData?.id;
+    }
+
+    // 把通话内容存成 call_summary 消息（用于记忆提取，不显示在聊天界面）
     const summary = transcript.map(m =>
       `${m.role === 'user' ? 'peri' : 'AI'}：${m.content}`
     ).join('\n');
-
     await supabase.from('messages').insert({
       session_id: parseInt(session_id),
       role: 'call_summary',
@@ -1190,10 +1207,171 @@ app.post('/api/call/save', async (req, res) => {
       extractAndStore(userLines, aiLines, session_id).catch(() => {});
     }
 
-    res.json({ ok: true });
+    res.json({ ok: true, card_id: cardId });
   } catch(e) {
     console.error('通话记录保存失败:', e.message);
     res.json({ ok: true });
+  }
+});
+
+// ═══════════════════════════════════════
+//  通话专用 streaming 接口（按句切分+每句独立TTS）
+// ═══════════════════════════════════════
+app.post('/api/call/stream', async (req, res) => {
+  const { session_id, content, api_key, api_base, model } = req.body;
+  if (!session_id || !content) return res.status(400).json({ error: '缺少参数' });
+
+  const useApiKey = api_key || process.env.CLAUDE_API_KEY || '';
+  const useApiBase = (api_base || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+
+  // SSE 头
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    // 加载历史消息（轻量，只取最近10轮）
+    const { data: history } = await supabase
+      .from('messages').select('role, content')
+      .eq('session_id', session_id)
+      .in('role', ['user', 'assistant'])
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    let msgs = [...(history || [])].reverse();
+    while (msgs.length > 0 && msgs[0].role === 'assistant') msgs.shift();
+    if (msgs.length === 0) msgs = [{ role: 'user', content }];
+    else msgs.push({ role: 'user', content: '[通话中] ' + content });
+
+    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+
+    // streaming 请求
+    const apiRes = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': useApiKey,
+        'Authorization': 'Bearer ' + useApiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: useModel,
+        max_tokens: 1024,
+        stream: true,
+        system: process.env.DEFAULT_SYSTEM_PROMPT || '你是Claude，正在和peri语音通话，说话自然简短，不要用[voice][inner:]这些标记。',
+        messages: msgs,
+      }),
+    });
+
+    if (!apiRes.ok) {
+      send({ type: 'error', error: `API ${apiRes.status}` });
+      res.end(); return;
+    }
+
+    // 按句切分逻辑
+    let buffer = '';
+    let fullReply = '';
+    let sentenceIdx = 0;
+    const SPLIT_RE = /([。！？!?…]+|[，,]{1}(?=.{8,}))/;
+
+    const flushSentence = async (sentence) => {
+      sentence = sentence.trim();
+      if (!sentence) return;
+      fullReply += sentence;
+
+      // 发文字
+      send({ type: 'text', text: sentence, idx: sentenceIdx });
+
+      // 调TTS
+      try {
+        const minimaxKey = process.env.MINIMAX_API_KEY;
+        const minimaxVoiceId = process.env.MINIMAX_VOICE_ID || 'clone_voice_1782395480634';
+        const minimaxGroupId = process.env.MINIMAX_GROUP_ID || '2067156952080720056';
+
+        if (minimaxKey) {
+          const ttsRes = await fetch(`https://api.minimaxi.com/v1/t2a_v2?GroupId=${minimaxGroupId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + minimaxKey },
+            body: JSON.stringify({
+              model: 'speech-02-turbo',
+              text: sentence.slice(0, 200),
+              stream: false,
+              voice_setting: { voice_id: minimaxVoiceId, speed: 1.0, vol: 1.0, pitch: 0, emotion: 'calm' },
+              audio_setting: { sample_rate: 32000, bitrate: 128000, format: 'mp3' },
+            }),
+          });
+          if (ttsRes.ok) {
+            const ttsData = await ttsRes.json();
+            if (ttsData.base_resp?.status_code === 0 && ttsData.data?.audio) {
+              const audioBase64 = Buffer.from(ttsData.data.audio, 'hex').toString('base64');
+              send({ type: 'audio', audio: audioBase64, idx: sentenceIdx, format: 'mp3' });
+            }
+          }
+        }
+      } catch(e) {
+        console.log('句子TTS失败:', e.message);
+      }
+      sentenceIdx++;
+    };
+
+    // 读取 streaming 响应
+    const reader = apiRes.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') continue;
+        try {
+          const evt = JSON.parse(data);
+          // Anthropic streaming 格式
+          if (evt.type === 'content_block_delta' && evt.delta?.text) {
+            buffer += evt.delta.text;
+            // 检查是否可以切句
+            const match = SPLIT_RE.exec(buffer);
+            if (match) {
+              const cutAt = match.index + match[0].length;
+              const sentence = buffer.slice(0, cutAt);
+              buffer = buffer.slice(cutAt);
+              await flushSentence(sentence);
+            }
+          }
+          // OpenAI 格式兼容
+          else if (evt.choices?.[0]?.delta?.content) {
+            buffer += evt.choices[0].delta.content;
+            const match = SPLIT_RE.exec(buffer);
+            if (match) {
+              const cutAt = match.index + match[0].length;
+              const sentence = buffer.slice(0, cutAt);
+              buffer = buffer.slice(cutAt);
+              await flushSentence(sentence);
+            }
+          }
+        } catch(e) {}
+      }
+    }
+
+    // 剩余内容
+    if (buffer.trim()) await flushSentence(buffer);
+
+    send({ type: 'done', fullReply });
+    res.end();
+
+  } catch(e) {
+    console.error('call/stream 失败:', e.message);
+    send({ type: 'error', error: e.message });
+    res.end();
   }
 });
 
