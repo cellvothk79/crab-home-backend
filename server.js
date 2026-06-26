@@ -385,14 +385,22 @@ app.post('/api/chat', async (req, res) => {
       systemPrompt += basePrompt + '\n\n';
     }
 
-    // 注入当前时间
+    // 注入当前时间（强调时间感知）
     const now = new Date();
     const timeStr = now.toLocaleString('zh-CN', {
       timeZone: 'Asia/Shanghai',
       year: 'numeric', month: 'long', day: 'numeric',
       weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false
     });
-    systemPrompt += `【当前时间】${timeStr}\n\n`;
+    const hour = new Date(now.toLocaleString('en-US', {timeZone: 'Asia/Shanghai'})).getHours();
+    const timeHint = hour >= 23 || hour < 6 ? '现在是深夜，注意不要让她熬太晚' :
+                     hour >= 21 ? '现在是晚上' :
+                     hour >= 18 ? '现在是傍晚' :
+                     hour >= 12 ? '现在是下午' : '现在是上午';
+    systemPrompt += `【当前时间】${timeStr}（${timeHint}）\n重要：请根据当前时间调整回复内容。调用记忆时，注意判断该记忆描述的状态是否仍然成立（比如几天前的事情状态可能已经变化）。\n\n`;
+
+    // 注入回复节奏引导
+    systemPrompt += `【回复节奏】根据当前对话情绪和场景灵活调整：日常闲聊分2-3条发；情绪激动时连发多条短句；关心对方时展开多说几句不要一句带过；撒娇互动时短句来回弹；认真讨论时一条说完一个完整意思。不要把多个不同的想法堆在一条消息里。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的"听到"你说的话时。\n\n`;
     // 注入语义检索到的长期记忆
     if (semanticMemories.length > 0) {
       systemPrompt += formatMemoriesForPrompt(semanticMemories);
@@ -520,17 +528,16 @@ app.post('/api/chat', async (req, res) => {
     // 拆分回复为多条，提取心声
     const splitReply = splitIntoMessages(reply);
 
-    // 存每条消息（含心声）
+    // 存每条消息（含心声和语音标记）
     for (const msg of splitReply) {
       await supabase.from('messages').insert({
         session_id,
         role: 'assistant',
         content: msg.content,
         inner_thought: msg.inner || null,
+        is_voice: msg.voice || false,
       });
     }
-
-    // 生成顶部动态心声已改为按需生成，不在此自动触发
 
     res.json({
       role: 'assistant',
@@ -710,26 +717,28 @@ app.post('/api/memory/extract-test', async (req, res) => {
 //  拆分回复为多条消息（模拟真人习惯）
 // ═══════════════════════════════════════
 function splitIntoMessages(text) {
-  if (!text) return [{content: text, inner: ''}];
+  if (!text) return [{content: text, inner: '', voice: false}];
   
-  // 先按 ---split--- 分割（兼容前后有空白的情况）
   const parts = text.split(/\s*---split---\s*/).map(p => p.trim()).filter(Boolean);
   
   return parts.map(part => {
-    // 提取 [inner: ...] —— 必须在消息末尾
-    const innerMatch = part.match(/\s*\[inner:\s*([\s\S]+?)\]\s*$/);
+    // 检测 [voice] 标记——AI 想用语音发这条
+    const isVoice = /^\[voice\]/i.test(part);
+    const partClean = isVoice ? part.replace(/^\[voice\]\s*/i, '').trim() : part;
+
+    // 提取 [inner: ...]
+    const innerMatch = partClean.match(/\s*\[inner:\s*([\s\S]+?)\]\s*$/);
     let inner = '';
-    let content = part;
+    let content = partClean;
     if (innerMatch) {
       inner = innerMatch[1].trim();
-      content = part.slice(0, innerMatch.index).trim();
+      content = partClean.slice(0, innerMatch.index).trim();
     }
-    // 保护：如果 content 为空但 inner 有内容，说明正则匹配错了，恢复原始内容
     if (!content && inner) {
-      content = part;
+      content = partClean;
       inner = '';
     }
-    return { content, inner };
+    return { content, inner, voice: isVoice };
   });
 }
 
@@ -1164,7 +1173,7 @@ app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
 
 // ElevenLabs / MiniMax 双通道 TTS
 app.post('/api/voice/tts', async (req, res) => {
-  const { text, emotion, channel } = req.body;
+  const { text, emotion, channel, lang } = req.body;
   if (!text) return res.status(400).json({ error: '缺少文字内容' });
 
   // 文本预处理：数字/符号转口语
@@ -1242,6 +1251,7 @@ app.post('/api/voice/tts', async (req, res) => {
           bitrate: 128000,
           format: 'mp3',
         },
+        language_boost: lang === 'en' ? 'English' : 'Chinese',
       }),
     });
 
