@@ -1153,6 +1153,7 @@ app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
     fd.append('file', audioBlob, 'voice.webm');
     fd.append('model', 'whisper-1');
     fd.append('language', 'zh');
+    fd.append('prompt', '这是一段私人聊天的语音消息，内容是日常对话。');
 
     const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
@@ -1166,7 +1167,14 @@ app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
     }
 
     const whisperData = await whisperRes.json();
-    const text = whisperData.text?.trim() || '';
+    let text = whisperData.text?.trim() || '';
+
+    // 幻觉黑名单过滤
+    const hallucinations = ['欢迎订阅','感谢收看','请点赞','关注我','感谢观看','欢迎关注','订阅频道','点赞收藏','一键三连'];
+    if(hallucinations.some(h => text.includes(h))) {
+      console.log('Whisper 幻觉过滤:', text);
+      text = '';
+    }
 
     if (!text) return res.json({ text: '', emotion: '' });
 
