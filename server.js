@@ -290,8 +290,9 @@ app.post('/api/chat', async (req, res) => {
     const quoteContent = req.body.quote_content || null;
     const imageBase64 = req.body.image_base64 || null;
     const imageMime = req.body.image_mime || 'image/jpeg';
+    const isVoice = req.body.is_voice || false;
     for (const txt of userTexts) {
-      const userMsgData = { session_id, role: 'user', content: txt };
+      const userMsgData = { session_id, role: 'user', content: txt, is_voice: isVoice };
       if (quoteContent && txt === userTexts[0]) {
         userMsgData.quote_content = quoteContent;
       }
@@ -1265,15 +1266,36 @@ app.post('/api/voice/tts', async (req, res) => {
     }
 
     const data = await ttsRes.json();
+    console.log('[MiniMax TTS] status:', data.base_resp?.status_code, data.base_resp?.status_msg);
     if (data.base_resp?.status_code !== 0) {
       throw new Error(data.base_resp?.status_msg || 'MiniMax 返回错误');
     }
 
-    // MiniMax 返回 base64 音频
     const audioBase64 = data.data?.audio;
     if (!audioBase64) throw new Error('MiniMax 没有返回音频数据');
 
     const audioBuffer = Buffer.from(audioBase64, 'hex');
+
+    // 上传到 Supabase Storage 持久化，刷新后仍可播放
+    try {
+      const fileName = `voice_${Date.now()}.mp3`;
+      const { error: uploadErr } = await supabase.storage
+        .from('voice-messages')
+        .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false });
+
+      if (!uploadErr) {
+        const { data: urlData } = supabase.storage
+          .from('voice-messages')
+          .getPublicUrl(fileName);
+        // 返回公开 URL
+        res.set('Content-Type', 'application/json');
+        return res.json({ audioUrl: urlData.publicUrl });
+      }
+    } catch(storageErr) {
+      console.log('Storage 上传失败，降级返回二进制:', storageErr.message);
+    }
+
+    // fallback：直接返回二进制
     res.set('Content-Type', 'audio/mpeg');
     res.send(audioBuffer);
   } catch(err) {
