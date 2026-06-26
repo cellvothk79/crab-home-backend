@@ -1173,7 +1173,7 @@ app.post('/api/call/save', async (req, res) => {
 
     await supabase.from('messages').insert({
       session_id: parseInt(session_id),
-      role: 'user',
+      role: 'call_summary',
       content: `[通话记录 ${Math.floor(duration/60)}分${duration%60}秒]\n${summary}`,
       visible: false,
     });
@@ -1358,8 +1358,7 @@ app.post('/api/voice/tts', async (req, res) => {
   // 通话模式用 turbo 模型不上传 Storage，直接返回音频（更快）
   const isCallMode = req.body?.call_mode || false;
   const minimaxModel = isCallMode ? 'speech-02-turbo' : 'speech-02-hd';
-  // 使用低延迟端点
-  const minimaxEndpoint = `https://api-uw.minimax.io/v1/t2a_v2?GroupId=${minimaxGroupId}`;
+  const minimaxEndpoint = `https://api.minimaxi.com/v1/t2a_v2?GroupId=${minimaxGroupId}`;
 
   // 如果切了英文，先翻译
   let ttsText = cleanText;
