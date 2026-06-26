@@ -302,6 +302,7 @@ app.post('/api/chat', async (req, res) => {
     const isVoice = req.body.is_voice || false;
     const audioUrl = req.body.audio_url || null;
     const callMode = req.body.call_mode || false;
+    if (callMode) console.log('[通话模式] 不存消息到聊天记录');
 
     // 通话模式不存消息到聊天记录（通话结束后统一存）
     if (!callMode) {
@@ -420,8 +421,12 @@ app.post('/api/chat', async (req, res) => {
                      hour >= 12 ? '现在是下午' : '现在是上午';
     systemPrompt += `【当前时间】${timeStr}（${timeHint}）\n重要：请根据当前时间调整回复内容。调用记忆时，注意判断该记忆描述的状态是否仍然成立（比如几天前的事情状态可能已经变化）。\n\n`;
 
-    // 注入回复节奏引导
-    systemPrompt += `【回复节奏】根据当前对话情绪和场景灵活调整：日常闲聊分2-3条发；情绪激动时连发多条短句；关心对方时展开多说几句不要一句带过；撒娇互动时短句来回弹；认真讨论时一条说完一个完整意思。不要把多个不同的想法堆在一条消息里。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的"听到"你说的话时。\n\n`;
+    // 通话模式提示：自然说话，不用分条格式
+    if (callMode) {
+      systemPrompt += `【通话模式】现在是实时语音通话，像打电话一样自然说话，不要用[voice]标记，不要用[inner:]标记，回复会直接转成语音播放。\n\n`;
+    } else {
+      systemPrompt += `【回复节奏】根据当前对话情绪和场景灵活调整：日常闲聊分2-3条发；情绪激动时连发多条短句；关心对方时展开多说几句不要一句带过；撒娇互动时短句来回弹；认真讨论时一条说完一个完整意思。不要把多个不同的想法堆在一条消息里。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的"听到"你说的话时。\n\n`;
+    }
     // 注入语义检索到的长期记忆
     if (semanticMemories.length > 0) {
       systemPrompt += formatMemoriesForPrompt(semanticMemories);
