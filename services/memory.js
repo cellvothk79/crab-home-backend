@@ -132,6 +132,9 @@ async function extractAndStore(userText, botReply, sessionId) {
     (process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
   const model = isDeepSeek ? 'deepseek-chat' : (process.env.CLAUDE_MODEL || 'claude-sonnet-4-6');
 
+  const now = new Date();
+  const todayStr = now.toLocaleDateString('zh-CN', {timeZone:'Asia/Shanghai', year:'numeric', month:'long', day:'numeric'});
+
   const prompt = `你是一个记忆提取助手。分析下面这段对话，提取值得长期记住的信息。
 
 角色说明（非常重要，必须严格遵守）：
@@ -140,6 +143,12 @@ async function extractAndStore(userText, botReply, sessionId) {
 - 对话里"用户："说的话是peri说的，"AI："说的话是我（AI）说的
 - 提取记忆时，谁说的话、谁做的事，必须归因正确，不能把AI说的话写成peri做的，也不能把peri说的话写成AI做的
 - 如果是双方互动的场景，要体现双方各自的参与，不要简化成单方面行为
+
+时间规则（必须遵守，违反会导致时间错乱）：
+- 今天是 ${todayStr}
+- 记忆中所有时间表述必须用绝对日期，如「2026年6月26日」
+- 严禁使用「今天/昨天/明天/刚才/刚刚/最近/前几天/上周」等相对时间词
+- 如果对话里提到「今天」，在记忆里必须写成「${todayStr}」
 
 对话内容：
 用户（peri）：${userText}
@@ -312,27 +321,38 @@ AI（我）：${botReply}
 function formatMemoriesForPrompt(memories) {
   if (!memories || memories.length === 0) return '';
 
-  // 按 memory_type 分组
+  const now = new Date();
+
+  function memDateStr(m) {
+    if (!m.created_at) return '';
+    const d = new Date(m.created_at);
+    const diffDays = Math.floor((now - d) / (1000 * 60 * 60 * 24));
+    const dateStr = d.toLocaleDateString('zh-CN', {timeZone:'Asia/Shanghai', month:'long', day:'numeric'});
+    if (diffDays === 0) return '（今天）';
+    if (diffDays === 1) return `（昨天，${dateStr}）`;
+    if (diffDays < 7) return `（${diffDays}天前，${dateStr}）`;
+    return `（${dateStr}）`;
+  }
+
   const core = memories.filter(m => m.memory_type === 'core');
   const episodic = memories.filter(m => m.memory_type !== 'core');
 
   const parts = [];
 
   if (core.length > 0) {
-    // core 记忆：关于她是谁的认知，叙事段落
     const coreText = core.map(m => m.summary).join('。');
     parts.push(`关于她这个人，我知道的：${coreText}。`);
   }
 
   if (episodic.length > 0) {
-    // episodic 记忆：具体的事和细节，像想起来的片段
-    const episodicText = episodic.map(m => m.summary).join('；');
+    // episodic 记忆带上时间标注，让 AI 能判断时效性
+    const episodicText = episodic.map(m => `${m.summary}${memDateStr(m)}`).join('；');
     parts.push(`想起来的一些事：${episodicText}。`);
   }
 
   if (parts.length === 0) return '';
 
-  return `【想起来的事】\n${parts.join('\n')}\n\n这些是我真实记得的，不用刻意提起，但可以自然地用到对话里。\n`;
+  return `【想起来的事】\n${parts.join('\n')}\n\n这些是我真实记得的，不用刻意提起，但可以自然地用到对话里。注意：记忆里如果有「今天/昨天」等字眼，要结合括号里的日期判断是否仍然成立，不要把几天前的事当成今天的事。\n`;
 }
 
 module.exports = { searchMemories, extractAndStore, formatMemoriesForPrompt, getEmbedding };
