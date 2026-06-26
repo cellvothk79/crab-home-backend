@@ -1378,6 +1378,7 @@ app.post('/api/call/stream', async (req, res) => {
 // 获取通话记录列表
 app.get('/api/call/records', async (req, res) => {
   const { session_id } = req.query;
+  console.log('[call/records] 查询 session_id:', session_id);
   if (!session_id) return res.status(400).json({ error: '缺少 session_id' });
   const { data, error } = await supabase
     .from('call_records')
@@ -1385,6 +1386,7 @@ app.get('/api/call/records', async (req, res) => {
     .eq('session_id', parseInt(session_id))
     .order('created_at', { ascending: false })
     .limit(100);
+  console.log('[call/records] 结果:', data?.length, '条, error:', error?.message||'无');
   if (error) return res.status(500).json({ error: error.message });
   res.json(data || []);
 });
