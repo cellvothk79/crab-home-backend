@@ -302,8 +302,10 @@ app.post('/api/chat', async (req, res) => {
     const imageBase64 = req.body.image_base64 || null;
     const imageMime = req.body.image_mime || 'image/jpeg';
     const isVoice = req.body.is_voice || false;
+    const audioUrl = req.body.audio_url || null;
     for (const txt of userTexts) {
       const userMsgData = { session_id, role: 'user', content: txt, is_voice: isVoice };
+      if (audioUrl && txt === userTexts[0]) userMsgData.audio_url = audioUrl;
       if (quoteContent && txt === userTexts[0]) {
         userMsgData.quote_content = quoteContent;
       }
@@ -1119,6 +1121,23 @@ app.put('/api/config', async (req, res) => {
 // ═══════════════════════════════════════
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+// 上传用户录音到 Supabase Storage
+app.post('/api/voice/upload', upload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '没有收到音频文件' });
+  try {
+    const fileName = `user_voice_${Date.now()}.webm`;
+    const { error } = await supabase.storage
+      .from('voice-messages')
+      .upload(fileName, req.file.buffer, { contentType: 'audio/webm', upsert: false });
+    if (error) throw new Error(error.message);
+    const { data } = supabase.storage.from('voice-messages').getPublicUrl(fileName);
+    res.json({ audioUrl: data.publicUrl });
+  } catch(e) {
+    console.error('录音上传失败:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Whisper 语音转文字 + 情绪识别
 app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
