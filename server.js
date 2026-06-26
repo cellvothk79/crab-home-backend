@@ -1184,9 +1184,13 @@ app.post('/api/call/save', async (req, res) => {
         session_id: parseInt(session_id),
         role: 'call_card',
         content: card_content,
-        visible: true,
       }).select('id').single();
-      if (!cardErr) cardId = cardData?.id;
+      if (cardErr) {
+        console.error('[call/save] call_card插入失败:', cardErr.message);
+      } else {
+        cardId = cardData?.id;
+        console.log('[call/save] call_card插入成功, id:', cardId);
+      }
     }
 
     // 把通话内容存成 call_summary 消息（用于记忆提取，不显示在聊天界面）
