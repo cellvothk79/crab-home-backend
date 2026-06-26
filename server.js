@@ -941,15 +941,13 @@ app.get('/api/mood/random', async (req, res) => {
 
 // 按需生成心声（用户点击触发，支持传消息内容直接生成）
 app.post('/api/mood/generate', async (req, res) => {
-  const { session_id, content } = req.body;
+  const { session_id, content, api_key, api_base, model } = req.body;
 
   try {
     let userText = '', botText = '';
 
     if (content) {
-      // 直接传了消息内容（单条消息心声）
       botText = content;
-      // 取最近一条用户消息作为上下文
       if (session_id) {
         const { data: recentMsgs } = await supabase
           .from('messages').select('role, content')
@@ -960,7 +958,6 @@ app.post('/api/mood/generate', async (req, res) => {
         userText = recentMsgs?.[0]?.content || '';
       }
     } else if (session_id) {
-      // 从最近对话提取（顶部此刻状态用）
       const { data: recentMsgs } = await supabase
         .from('messages').select('role, content')
         .eq('session_id', session_id)
@@ -976,9 +973,9 @@ app.post('/api/mood/generate', async (req, res) => {
 
     if (!botText) return res.json({ mood: '' });
 
-    const mood = await generateMoodLine(userText, botText);
+    const mood = await generateMoodLine(userText, botText, api_key, api_base, model);
+    console.log('[心声] 生成结果:', mood?.slice(0,30)||'空');
     if (mood && !content) {
-      // 只有顶部状态才更新 settings 缓存
       supabase.from('settings').update({ mood_line: mood }).eq('id', 1).catch(() => {});
     }
     res.json({ mood });
@@ -1226,10 +1223,17 @@ app.post('/api/voice/tts', async (req, res) => {
   // 默认走 MiniMax
   const minimaxKey = process.env.MINIMAX_API_KEY;
   const minimaxVoiceId = process.env.MINIMAX_VOICE_ID || 'clone_voice_1782395480634';
+  const minimaxGroupId = process.env.MINIMAX_GROUP_ID || '2067156952080720056';
   if (!minimaxKey) return res.status(500).json({ error: '未配置 MINIMAX_API_KEY' });
 
+  // 情绪映射
+  function emotionToMinimax(e) {
+    const map = { '开心': 'happy', '兴奋': 'happy', '难过': 'sad', '疲惫': 'calm', '撒娇': 'happy', '生气': 'angry', '平静': 'calm' };
+    return map[e] || 'calm';
+  }
+
   try {
-    const ttsRes = await fetch('https://api.minimax.chat/v1/t2a_v2', {
+    const ttsRes = await fetch(`https://api.minimaxi.com/v1/t2a_v2?GroupId=${minimaxGroupId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1239,12 +1243,12 @@ app.post('/api/voice/tts', async (req, res) => {
         model: 'speech-01-turbo',
         text: cleanText,
         stream: false,
-        group_id: process.env.MINIMAX_GROUP_ID || '2067156952080720056',
         voice_setting: {
           voice_id: minimaxVoiceId,
           speed: 1.0,
           vol: 1.0,
           pitch: 0,
+          emotion: emotionToMinimax(emotion),
         },
         audio_setting: {
           sample_rate: 32000,
