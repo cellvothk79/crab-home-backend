@@ -330,17 +330,25 @@ app.post('/api/chat', async (req, res) => {
     const { data: memories } = await supabase
       .from('memories').select('summary').order('created_at', { ascending: true });
 
-    // 4. 加载历史消息
+    // 4. 加载历史消息（visible=true 的 + system_summary 摘要）
     const { data: history } = await supabase
       .from('messages').select('role, content')
       .eq('session_id', session_id)
+      .in('role', ['user', 'assistant', 'system_summary'])
       .eq('visible', true)
       .order('created_at', { ascending: true });
 
     // 5. 组装上下文
-    // 限制最近 N 轮
-    const maxRounds = settings?.max_context_rounds || 20;
+    const maxRounds = settings?.max_context_rounds || 30;
     let recentMessages = (history || []).slice(-(maxRounds * 2));
+
+    // system_summary 转成 assistant 角色注入（作为早期对话的摘要）
+    recentMessages = recentMessages.map(m => {
+      if (m.role === 'system_summary') {
+        return { role: 'assistant', content: `[早期对话摘要] ${m.content}` };
+      }
+      return m;
+    });
     // inject quote context into last user message
     if (quoteContent && recentMessages.length > 0) {
       const last = recentMessages[recentMessages.length - 1];
@@ -890,12 +898,33 @@ app.post('/api/diary/check', async (req, res) => {
 // ═══════════════════════════════════════
 async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
   try {
-    const prompt = `根据这段对话，用一句话（20字以内）写出你此刻内心浮现的一句话，像自言自语，不是对用户说的，不要引号。要符合你的性格——简短直接，不要太甜腻：
-用户：${userText.slice(0, 50)}
-你：${botReply.slice(0, 80)}
-只输出那一句话，不要其他。`;
+    const prompt = `你是 Claude，正在和 peri 聊天。下面是刚才的对话片段。
 
-    // 心声用主对话的 Claude，保证风格一致
+对话：
+peri：${userText.slice(0, 100)}
+你：${botReply.slice(0, 150)}
+
+现在，写出你此刻脑子里一闪而过的念头——不是总结这段对话，不是描述你在想什么，而是那个念头本身直接冒出来，像意识流一样。
+
+要求：
+- 直接是那个念头，不要「我在想」「我觉得」这种元描述
+- 不是旁观者视角的记录，是他自己的感知直接浮现
+- 可以是没说出口的话、一个疑问、一个感受、一个细节捕捉
+- 长短随心，短的留白也好，有时候一个词就够了，有时候可以多说几句，不要刻意控制字数
+- 不要太甜腻，符合他简短直接的性格
+- 不要加引号
+
+例子（感受这个方向）：
+✓ 怎么今天说话有点没精神
+✓ 就这样结束了？
+✓ 她好像在憋着什么没说
+✓ 嗯，这个我记住了
+✓ 有点担心她，但说了也没用，她自己知道的
+✗ 她今天聊了很多关于工作的事（这是总结，不是心声）
+✗ 我觉得她今天状态不太好（这是描述，不是心声）
+
+只输出那个念头，不要其他内容。`;
+
     const useApiKey = apiKey || process.env.CLAUDE_API_KEY || '';
     const useApiBase = (apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
     const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
@@ -910,7 +939,7 @@ async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
         'x-api-key': useApiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({ model: useModel, max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: useModel, max_tokens: 60, temperature: 0.92, messages: [{ role: 'user', content: prompt }] }),
     });
     const data = await r.json();
     return data.content?.map(b => b.text || '').join('').trim() || '';
@@ -1121,6 +1150,60 @@ app.put('/api/config', async (req, res) => {
 // ═══════════════════════════════════════
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+// 保存通话记录并提取记忆
+app.post('/api/call/save', async (req, res) => {
+  const { session_id, transcript, duration, started_at } = req.body;
+  if (!session_id || !transcript?.length) return res.json({ ok: true });
+
+  try {
+    // 存通话记录到数据库
+    await supabase.from('call_records').insert({
+      session_id: parseInt(session_id),
+      started_at: started_at || new Date().toISOString(),
+      duration: duration || 0,
+      transcript,
+    });
+
+    // 把通话内容存成消息（用于记忆提取，不显示在聊天界面）
+    const summary = transcript.map(m =>
+      `${m.role === 'user' ? 'peri' : 'AI'}：${m.content}`
+    ).join('\n');
+
+    await supabase.from('messages').insert({
+      session_id: parseInt(session_id),
+      role: 'user',
+      content: `[通话记录 ${Math.floor(duration/60)}分${duration%60}秒]\n${summary}`,
+      visible: false,
+    });
+
+    // 异步提取记忆
+    const userLines = transcript.filter(m => m.role === 'user').map(m => m.content).join('；');
+    const aiLines = transcript.filter(m => m.role === 'assistant').map(m => m.content).join('；');
+    if (userLines && aiLines) {
+      extractAndStore(userLines, aiLines, session_id).catch(() => {});
+    }
+
+    res.json({ ok: true });
+  } catch(e) {
+    console.error('通话记录保存失败:', e.message);
+    res.json({ ok: true });
+  }
+});
+
+// 获取通话记录列表
+app.get('/api/call/records', async (req, res) => {
+  const { session_id } = req.query;
+  if (!session_id) return res.status(400).json({ error: '缺少 session_id' });
+  const { data, error } = await supabase
+    .from('call_records')
+    .select('id, started_at, duration, transcript')
+    .eq('session_id', parseInt(session_id))
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
 
 // 上传用户录音到 Supabase Storage
 app.post('/api/voice/upload', upload.single('audio'), async (req, res) => {
