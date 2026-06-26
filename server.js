@@ -867,23 +867,30 @@ app.post('/api/diary/check', async (req, res) => {
 // ═══════════════════════════════════════
 async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
   try {
-    const prompt = `根据这段对话，用一句话（20字以内）写出AI此刻内心浮现的一句话，像自言自语，不是对用户说的，不要引号：
+    const prompt = `根据这段对话，用一句话（20字以内）写出你此刻内心浮现的一句话，像自言自语，不是对用户说的，不要引号。要符合你的性格——简短直接，不要太甜腻：
 用户：${userText.slice(0, 50)}
-AI：${botReply.slice(0, 80)}
+你：${botReply.slice(0, 80)}
 只输出那一句话，不要其他。`;
 
-    // 心声固定用 DeepSeek 官方 API
-    const useApiKey = process.env.DEEPSEEK_API_KEY || '';
-    const apiUrl = 'https://api.deepseek.com/v1/chat/completions';
+    // 心声用主对话的 Claude，保证风格一致
+    const useApiKey = apiKey || process.env.CLAUDE_API_KEY || '';
+    const useApiBase = (apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
+    const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
     if (!useApiKey) return '';
 
+    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
     const r = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey },
-      body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + useApiKey,
+        'x-api-key': useApiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({ model: useModel, max_tokens: 60, temperature: 0.9, messages: [{ role: 'user', content: prompt }] }),
     });
     const data = await r.json();
-    return data.choices?.[0]?.message?.content?.trim() || '';
+    return data.content?.map(b => b.text || '').join('').trim() || '';
   } catch(e) { return ''; }
 }
 
@@ -1103,16 +1110,16 @@ app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
   if (!openaiKey) return res.status(500).json({ error: '未配置 OPENAI_API_KEY' });
 
   try {
-    // 1. Whisper 转文字
-    const FormData = require('form-data');
+    // 1. Whisper 转文字（用 Node 18+ 内置 FormData）
     const fd = new FormData();
-    fd.append('file', req.file.buffer, { filename: 'voice.webm', contentType: req.file.mimetype });
+    const audioBlob = new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' });
+    fd.append('file', audioBlob, 'voice.webm');
     fd.append('model', 'whisper-1');
     fd.append('language', 'zh');
 
     const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + openaiKey, ...fd.getHeaders() },
+      headers: { 'Authorization': 'Bearer ' + openaiKey },
       body: fd,
     });
 
@@ -1155,17 +1162,12 @@ app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
   }
 });
 
-// ElevenLabs TTS 文字转语音
+// ElevenLabs / MiniMax 双通道 TTS
 app.post('/api/voice/tts', async (req, res) => {
-  const { text, emotion } = req.body;
+  const { text, emotion, channel } = req.body;
   if (!text) return res.status(400).json({ error: '缺少文字内容' });
 
-  const elevenKey = process.env.ELEVENLABS_API_KEY;
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || '9CFLhe6Ni1wD0VC6wLLb';
-
-  if (!elevenKey) return res.status(500).json({ error: '未配置 ELEVENLABS_API_KEY' });
-
-  // 1. 文本预处理：数字/符号转口语
+  // 文本预处理：数字/符号转口语
   function preprocessTTS(raw) {
     return raw
       .replace(/(\d{4})-(\d{2})-(\d{2})/g, (_, y, m, d) => `${y}年${parseInt(m)}月${parseInt(d)}日`)
@@ -1177,50 +1179,91 @@ app.post('/api/voice/tts', async (req, res) => {
       .slice(0, 500);
   }
 
-  // 2. 情绪 → ElevenLabs Audio Tag
-  function emotionToTag(e) {
-    const map = {
-      '开心': '[cheerfully]', '兴奋': '[excitedly]',
-      '难过': '[sadly]', '疲惫': '[tiredly]',
-      '撒娇': '[softly]', '生气': '[firmly]',
-      '平静': '[calmly]',
-    };
+  // 情绪 → ElevenLabs Audio Tag
+  function emotionToElevenTag(e) {
+    const map = { '开心': '[cheerfully]', '兴奋': '[excitedly]', '难过': '[sadly]', '疲惫': '[tiredly]', '撒娇': '[softly]', '生气': '[firmly]', '平静': '[calmly]' };
     return map[e] || '[softly]';
   }
 
-  try {
-    const cleanText = preprocessTTS(text);
-    const tag = emotionToTag(emotion || '平静');
-    const ttsText = `${tag} ${cleanText}`;
+  const cleanText = preprocessTTS(text);
 
-    const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+  // ── MiniMax ──
+  if (channel === 'elevenlabs') {
+    // ElevenLabs 通道
+    const elevenKey = process.env.ELEVENLABS_API_KEY;
+    const voiceId = process.env.ELEVENLABS_VOICE_ID || '9CFLhe6Ni1wD0VC6wLLb';
+    if (!elevenKey) return res.status(500).json({ error: '未配置 ELEVENLABS_API_KEY' });
+    try {
+      const tag = emotionToElevenTag(emotion || '平静');
+      const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'xi-api-key': elevenKey },
+        body: JSON.stringify({
+          text: `${tag} ${cleanText}`,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: { stability: 0.28, similarity_boost: 0.75, style: 0.88, use_speaker_boost: true },
+        }),
+      });
+      if (!ttsRes.ok) { const err = await ttsRes.json().catch(()=>({})); throw new Error(err.detail?.message || 'ElevenLabs 失败'); }
+      const buf = await ttsRes.arrayBuffer();
+      res.set('Content-Type', 'audio/mpeg');
+      return res.send(Buffer.from(buf));
+    } catch(err) {
+      console.error('ElevenLabs TTS 失败:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // 默认走 MiniMax
+  const minimaxKey = process.env.MINIMAX_API_KEY;
+  const minimaxVoiceId = process.env.MINIMAX_VOICE_ID || 'clone_voice_1782395480634';
+  if (!minimaxKey) return res.status(500).json({ error: '未配置 MINIMAX_API_KEY' });
+
+  try {
+    const ttsRes = await fetch('https://api.minimax.chat/v1/t2a_v2', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'xi-api-key': elevenKey,
+        'Authorization': 'Bearer ' + minimaxKey,
       },
       body: JSON.stringify({
-        text: ttsText,
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: {
-          stability: 0.28,
-          similarity_boost: 0.75,
-          style: 0.88,
-          use_speaker_boost: true,
+        model: 'speech-01-turbo',
+        text: cleanText,
+        stream: false,
+        group_id: process.env.MINIMAX_GROUP_ID || '2067156952080720056',
+        voice_setting: {
+          voice_id: minimaxVoiceId,
+          speed: 1.0,
+          vol: 1.0,
+          pitch: 0,
+        },
+        audio_setting: {
+          sample_rate: 32000,
+          bitrate: 128000,
+          format: 'mp3',
         },
       }),
     });
 
     if (!ttsRes.ok) {
       const err = await ttsRes.json().catch(() => ({}));
-      throw new Error(err.detail?.message || 'ElevenLabs 失败，可能需要充值');
+      throw new Error(err.base_resp?.status_msg || 'MiniMax TTS 失败');
     }
 
-    const audioBuffer = await ttsRes.arrayBuffer();
+    const data = await ttsRes.json();
+    if (data.base_resp?.status_code !== 0) {
+      throw new Error(data.base_resp?.status_msg || 'MiniMax 返回错误');
+    }
+
+    // MiniMax 返回 base64 音频
+    const audioBase64 = data.data?.audio;
+    if (!audioBase64) throw new Error('MiniMax 没有返回音频数据');
+
+    const audioBuffer = Buffer.from(audioBase64, 'hex');
     res.set('Content-Type', 'audio/mpeg');
-    res.send(Buffer.from(audioBuffer));
+    res.send(audioBuffer);
   } catch(err) {
-    console.error('TTS 失败:', err.message);
+    console.error('MiniMax TTS 失败:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
