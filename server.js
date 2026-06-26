@@ -174,6 +174,17 @@ app.get('/api/messages/:sessionId', async (req, res) => {
 });
 
 
+// 更新消息的 audio_url（TTS 生成后回存）
+app.patch('/api/messages/:id/audio', async (req, res) => {
+  const { audio_url } = req.body;
+  if (!audio_url) return res.status(400).json({ error: '缺少 audio_url' });
+  const { error } = await supabase.from('messages')
+    .update({ audio_url })
+    .eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
 // 删除单条消息
 app.delete('/api/messages/:id', async (req, res) => {
   const { error } = await supabase.from('messages').delete().eq('id', req.params.id);
@@ -1233,6 +1244,35 @@ app.post('/api/voice/tts', async (req, res) => {
     return map[e] || 'calm';
   }
 
+  // 如果切了英文，先翻译
+  let ttsText = cleanText;
+  let translatedText = null;
+  if (lang === 'en') {
+    try {
+      const deepseekKey = process.env.DEEPSEEK_API_KEY;
+      if (deepseekKey) {
+        const transRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + deepseekKey },
+          body: JSON.stringify({
+            model: 'deepseek-chat',
+            max_tokens: 300,
+            temperature: 0.3,
+            messages: [{ role: 'user', content: `Translate the following Chinese text to natural English. Output only the translation, nothing else:\n${cleanText}` }],
+          }),
+        });
+        const transData = await transRes.json();
+        const translated = transData.choices?.[0]?.message?.content?.trim();
+        if (translated) {
+          ttsText = translated;
+          translatedText = translated;
+        }
+      }
+    } catch(e) {
+      console.log('翻译失败，使用原文:', e.message);
+    }
+  }
+
   try {
     const ttsRes = await fetch(`https://api.minimaxi.com/v1/t2a_v2?GroupId=${minimaxGroupId}`, {
       method: 'POST',
@@ -1242,7 +1282,7 @@ app.post('/api/voice/tts', async (req, res) => {
       },
       body: JSON.stringify({
         model: 'speech-01-turbo',
-        text: cleanText,
+        text: ttsText,
         stream: false,
         voice_setting: {
           voice_id: minimaxVoiceId,
@@ -1289,7 +1329,7 @@ app.post('/api/voice/tts', async (req, res) => {
           .getPublicUrl(fileName);
         // 返回公开 URL
         res.set('Content-Type', 'application/json');
-        return res.json({ audioUrl: urlData.publicUrl });
+        return res.json({ audioUrl: urlData.publicUrl, translatedText });
       }
     } catch(storageErr) {
       console.log('Storage 上传失败，降级返回二进制:', storageErr.message);
