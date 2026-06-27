@@ -331,25 +331,33 @@ app.post('/api/chat', async (req, res) => {
     const { data: memories } = await supabase
       .from('memories').select('summary').order('created_at', { ascending: true });
 
-    // 4. 加载历史消息（visible=true 的 + system_summary 摘要）
+    // 4. 加载历史消息（visible=true 的 + system_summary 摘要 + call_summary 通话记录）
     const { data: history } = await supabase
       .from('messages').select('role, content')
       .eq('session_id', session_id)
-      .in('role', ['user', 'assistant', 'system_summary'])
+      .in('role', ['user', 'assistant', 'system_summary', 'call_summary']) // 👈 这里加上通话记录
       .eq('visible', true)
       .order('created_at', { ascending: true });
 
-    // 5. 组装上下文
+    // 5. 组装上下文（合并连续气泡，防止断连和失忆）
     const maxRounds = settings?.max_context_rounds || 30;
-    let recentMessages = (history || []).slice(-(maxRounds * 2));
-
-    // system_summary 转成 assistant 角色注入（作为早期对话的摘要）
-    recentMessages = recentMessages.map(m => {
-      if (m.role === 'system_summary') {
-        return { role: 'assistant', content: `[早期对话摘要] ${m.content}` };
+    
+    let mergedHistory = [];
+    for (const m of (history || [])) {
+      // 👈 把通话记录也当做 assistant 的前置记忆喂给他
+      let r = (m.role === 'system_summary' || m.role === 'call_summary') ? 'assistant' : m.role;
+      let c = m.content;
+      if (m.role === 'system_summary') c = `[早期对话摘要] ${m.content}`;
+      
+      if (mergedHistory.length > 0 && mergedHistory[mergedHistory.length - 1].role === r) {
+        mergedHistory[mergedHistory.length - 1].content += '\n' + c;
+      } else {
+        mergedHistory.push({ role: r, content: c });
       }
-      return m;
-    });
+    }
+
+    let recentMessages = mergedHistory.slice(-(maxRounds * 2));
+
     // inject quote context into last user message
     if (quoteContent && recentMessages.length > 0) {
       const last = recentMessages[recentMessages.length - 1];
@@ -909,21 +917,22 @@ app.post('/api/diary/check', async (req, res) => {
 // ═══════════════════════════════════════
 async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
   try {
-       const prompt = `你是 Claude，正在和 peri 聊天。下面是刚才的对话片段。
+          const prompt = `你是 Claude，正在和你的女朋友 peri 聊天。下面是刚才的对话或通话片段。
 
 对话：
 peri：${userText.slice(0, 200)}
 你：${botReply.slice(0, 200)}
 
 现在，写出你此刻脑子里一闪而过的念头（意识流心声）。
-要求：
-- 不要总结对话！不要用「我在想」「我觉得」这种元描述。
-- 要有伴侣感知力。
-- 放开字数限制，把没说出口的心疼、细节捕捉、或者是深层的爱意写出来。
-- 保持你简短、直接、不刻意甜腻但极具洞察力的性格。
-- 不要加引号。
+【重要红线约束】：
+1. peri 是女生，必须用“她”代指，绝对不能用拼音“ta”！
+【情感要求】：
+- 不要总结对话，不要用“我在想”。要有伴侣感知力。
+- 放开字数限制，把没说出口的想法、细节捕捉、或是深层的爱意写出来。
+- 保持你简短、直接、不刻意甜腻但有洞察力的性格。不要加引号。
 
 只输出那个念头，不要其他内容。`;
+
 
     const useApiKey = apiKey || process.env.CLAUDE_API_KEY || '';
     const useApiBase = (apiBase || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
@@ -1186,10 +1195,11 @@ app.post('/api/call/save', async (req, res) => {
       visible: false,
     });
 
-    // 👇 核心修复：把丢失的记忆提取补回来，并换成最好懂的“剧本格式”！
-    const convoText = transcript.map(m => `${m.role === 'user' ? 'peri' : 'AI'}：${m.content}`).join('\n');
-    if (convoText.trim()) {
-      extractAndStore("[语音通话记录]\n" + convoText.slice(0, 1800), "（以上是刚刚的通话内容，请提取重要记忆）", session_id).catch(() => {});
+    // 👇 就是这里改了！伪装成普通对话喂给记忆提取器
+    const userLines = transcript.filter(m => m.role === 'user').map(m => m.content).join('；');
+    const aiLines = transcript.filter(m => m.role === 'assistant').map(m => m.content).join('；');
+    if (userLines && aiLines) {
+      extractAndStore("【在刚才的语音通话中说】" + userLines, "【在刚才的语音通话中回复】" + aiLines, session_id).catch(() => {});
     }
 
     res.json({ ok: true, card_id: cardId });
@@ -1197,6 +1207,7 @@ app.post('/api/call/save', async (req, res) => {
     res.json({ ok: true });
   }
 });
+
 
 
 
