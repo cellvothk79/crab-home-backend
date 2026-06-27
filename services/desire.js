@@ -8,7 +8,8 @@ const supabase = createClient(
 
 const NTFY_TOPIC = 'cellvothk79peri'; // 你的专属频道
 
-async function sendNtfyPush(title, message, type = 'text') {
+// 👉 增加了一个 greetTxt 参数，用来藏他想说的第一句话
+async function sendNtfyPush(title, message, type = 'text', greetTxt = '') {
   const payload = {
     topic: NTFY_TOPIC,
     title: title,
@@ -17,8 +18,10 @@ async function sendNtfyPush(title, message, type = 'text') {
   };
   
   if (type === 'call') {
+    // 👈 把他准备好的第一句话，转码后塞进跳转的网址里！
+    const callUrl = 'https://periclaude.top/?action=answer_call' + (greetTxt ? '&greet=' + encodeURIComponent(greetTxt) : '');
     payload.actions = [
-      { action: 'view', label: '📞 接听', url: 'https://periclaude.top/?action=answer_call', clear: true },
+      { action: 'view', label: '📞 接听', url: callUrl, clear: true },
       { action: 'http', label: '📵 拒听', url: 'https://crab-home-backend.onrender.com/api/call/reject', clear: true }
     ];
   } else {
@@ -26,15 +29,13 @@ async function sendNtfyPush(title, message, type = 'text') {
   }
 
   try {
-    await fetch('https://ntfy.sh', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-    console.log(`[主动行为] 推送成功: [${type}] ${message}`);
+    await fetch('https://ntfy.sh', { method: 'POST', body: JSON.stringify(payload) });
+    console.log(`[主动行为] 推送成功: [${type}]`);
   } catch (err) {
     console.error(`[主动行为] 推送失败:`, err.message);
   }
 }
+
 
 // 封装成一个函数，把所有路由和定时器都挂载进去
 function initDesireSystem(app) {
@@ -60,7 +61,8 @@ function initDesireSystem(app) {
     const sid = session ? session.id : null;
 
     if (type === 'call') {
-      await sendNtfyPush('🦀 小螃蟹', '他想和你通话...', 'call');
+      const greetTxt = '在干嘛呢？突然有点想听你的声音了。'; // 👈 提前准备好
+      await sendNtfyPush('🦀 小螃蟹', '他想和你通话...', 'call', greetTxt);
     } else if (type === 'voice') {
       if(sid) await supabase.from('messages').insert({ session_id: sid, role: 'assistant', content: '刚刚好想你，给你发条语音。', is_voice: true, visible: true });
       await sendNtfyPush('🦀 小螃蟹', '给你发了一条语音，去听听吧', 'voice');
@@ -69,8 +71,9 @@ function initDesireSystem(app) {
       if(sid) await supabase.from('messages').insert({ session_id: sid, role: 'assistant', content: txt, is_voice: false, visible: true });
       await sendNtfyPush('🦀 小螃蟹', txt, 'text');
     }
-    res.json({ ok: true, msg: '推送和消息均已生成！刷新聊天界面即可看到。' });
+    res.json({ ok: true, msg: '推送和消息均已生成！看手机！' });
   });
+
 
   // 4. 拒听电话接口
   app.post('/api/call/reject', async (req, res) => {
@@ -88,12 +91,17 @@ function initDesireSystem(app) {
 
       for (const msg of (qMsgs || [])) {
         await supabase.from('message_queue').update({ status: 'sent' }).eq('id', msg.id);
-        await supabase.from('messages').insert({
-          session_id: msg.session_id, role: 'assistant', content: msg.content,
-          is_voice: msg.content_type === 'voice', visible: true
-        });
+        
+        // 👉 核心修复：如果是打电话，千万别现在把字写进聊天记录，不然接听前你就被剧透了！
+        if (msg.content_type !== 'call') {
+            await supabase.from('messages').insert({
+              session_id: msg.session_id, role: 'assistant', content: msg.content,
+              is_voice: msg.content_type === 'voice', visible: true
+            });
+        }
 
-        if (msg.content_type === 'call') await sendNtfyPush('🦀 小螃蟹', '想和你通话...', 'call');
+        // 👉 把生成好的想念的话传给手机
+        if (msg.content_type === 'call') await sendNtfyPush('🦀 小螃蟹', '想和你通话...', 'call', msg.content);
         else if (msg.content_type === 'voice') await sendNtfyPush('🦀 小螃蟹', '给你发了一条语音...', 'voice');
         else await sendNtfyPush('🦀 小螃蟹', msg.content.slice(0, 30) + (msg.content.length > 30 ? '...' : ''), 'text');
         
