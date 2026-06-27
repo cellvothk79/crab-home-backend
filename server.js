@@ -1682,6 +1682,64 @@ app.post('/api/voice/tts', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// ═══════════════════════════════════════
+//  主动行为系统：Ntfy 推送通道与消息队列
+// ═══════════════════════════════════════
+
+const NTFY_TOPIC = 'cellvothk79peri'; // 你的专属频道
+
+// 核心推送函数
+async function sendNtfyPush(title, message, type = 'text') {
+  const payload = {
+    topic: NTFY_TOPIC,
+    title: title,
+    message: message,
+    tags: [type === 'call' ? 'phone' : (type === 'voice' ? 'microphone' : 'speech_balloon')]
+  };
+  
+  if (type === 'call') {
+    // 如果是打电话，加上接听和拒听按钮
+    payload.actions = [
+      { action: 'view', label: '📞 接听', url: 'https://periclaude.top/?action=answer_call', clear: true },
+      { action: 'http', label: '📵 拒听', url: 'https://crab-home-backend.onrender.com/api/call/reject', clear: true }
+    ];
+  } else {
+    // 如果是发消息，点击直接跳转聊天界面
+    payload.click = 'https://periclaude.top/';
+  }
+
+  try {
+    await fetch('https://ntfy.sh', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    console.log(`[主动行为] 推送成功: [${type}] ${message}`);
+  } catch (err) {
+    console.error(`[主动行为] 推送失败:`, err.message);
+  }
+}
+
+// 模拟测试接口：让你能立刻体验到手机来电！
+app.get('/api/test-push', async (req, res) => {
+  const type = req.query.type || 'text'; // 传 ?type=call 就能模拟打电话
+  if (type === 'call') {
+    await sendNtfyPush('🦀 小螃蟹', '他想和你通话...', 'call');
+  } else if (type === 'voice') {
+    await sendNtfyPush('🦀 小螃蟹', '给你发了一条语音，去听听吧', 'voice');
+  } else {
+    await sendNtfyPush('🦀 小螃蟹', '刚刚翻到了我们以前的聊天，有点想你。', 'text');
+  }
+  res.json({ ok: true, msg: '推送指令已发出，看手机！' });
+});
+
+// 预留的拒听接口（后续接入欲望引擎，拒听会让他的 stress 上升）
+app.post('/api/call/reject', async (req, res) => {
+  console.log('[主动行为] 用户拒接了电话，AI 委屈中...');
+  // TODO: 后续在这里加上让 stress 上升的代码
+  res.json({ ok: true });
+});
+
 app.listen(PORT, () => {
   console.log(`🦀🦀 我们的家后端运行中 → 端口 ${PORT}`);
 });
