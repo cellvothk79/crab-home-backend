@@ -155,12 +155,12 @@ app.post('/api/memories/batch-extract', async (req, res) => {
 
 app.get('/api/messages/:sessionId', async (req, res) => {
   const limit = parseInt(req.query.limit) || 200;
-  const before = req.query.before; // 时间戳，加载这个时间之前的消息
+  const before = req.query.before;
 
   let query = supabase
     .from('messages').select('*')
     .eq('session_id', req.params.sessionId)
-    .in('role', ['user', 'assistant', 'call_card'])
+    .in('role', ['user', 'assistant', 'call_card', 'system']) // 👈 这里加上了 system
     .order('created_at', { ascending: false })
     .limit(limit);
 
@@ -172,6 +172,7 @@ app.get('/api/messages/:sessionId', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   res.json((data || []).reverse());
 });
+
 
 
 // 更新消息的 audio_url（TTS 生成后回存）
@@ -1160,43 +1161,30 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 // 保存通话记录并提取记忆
 app.post('/api/call/save', async (req, res) => {
   const { session_id, transcript, duration, started_at, card_content } = req.body;
-  console.log('[call/save] session_id:', session_id, 'transcript长度:', transcript?.length, 'duration:', duration);
-  if (!session_id) {
-    console.log('[call/save] 跳过：无session_id');
-    return res.json({ ok: true });
-  }
+  if (!session_id) return res.json({ ok: true });
 
   try {
-    // 存通话记录到数据库
     const { error: recErr } = await supabase.from('call_records').insert({
       session_id: parseInt(session_id),
       started_at: started_at || new Date().toISOString(),
       duration: duration || 0,
       transcript,
     });
-    if (recErr) console.error('[call/save] call_records插入失败:', recErr.message);
-    else console.log('[call/save] call_records插入成功');
 
-    // 把通话卡片存进 messages 表（刷新后能恢复）
     let cardId = null;
     if (card_content) {
+      // 👈 改为 system 角色并强制可见
       const { data: cardData, error: cardErr } = await supabase.from('messages').insert({
         session_id: parseInt(session_id),
-        role: 'call_card',
+        role: 'system', 
         content: card_content,
+        visible: true,
+        created_at: new Date().toISOString()
       }).select('id').single();
-      if (cardErr) {
-        console.error('[call/save] call_card插入失败:', cardErr.message);
-      } else {
-        cardId = cardData?.id;
-        console.log('[call/save] call_card插入成功, id:', cardId);
-      }
+      if (!cardErr) cardId = cardData?.id;
     }
 
-    // 把通话内容存成 call_summary 消息（用于记忆提取，不显示在聊天界面）
-    const summary = transcript.map(m =>
-      `${m.role === 'user' ? 'peri' : 'AI'}：${m.content}`
-    ).join('\n');
+    const summary = transcript.map(m => `${m.role === 'user' ? 'peri' : 'AI'}：${m.content}`).join('\n');
     await supabase.from('messages').insert({
       session_id: parseInt(session_id),
       role: 'call_summary',
@@ -1204,19 +1192,12 @@ app.post('/api/call/save', async (req, res) => {
       visible: false,
     });
 
-    // 异步提取记忆
-    const userLines = transcript.filter(m => m.role === 'user').map(m => m.content).join('；');
-    const aiLines = transcript.filter(m => m.role === 'assistant').map(m => m.content).join('；');
-    if (userLines && aiLines) {
-      extractAndStore(userLines, aiLines, session_id).catch(() => {});
-    }
-
     res.json({ ok: true, card_id: cardId });
   } catch(e) {
-    console.error('通话记录保存失败:', e.message);
     res.json({ ok: true });
   }
 });
+
 
 // ═══════════════════════════════════════
 //  通话专用 streaming 接口（按句切分+每句独立TTS）
