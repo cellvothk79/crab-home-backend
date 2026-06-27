@@ -324,7 +324,8 @@ app.post('/api/chat', async (req, res) => {
       .eq('id', session_id);
     
     // 👉 只要 peri 主动说话了，就把他的想念值清空，防止他聊着聊着突然“主动找你”
-    supabase.from('desires').update({ attachment: 0.2, updated_at: new Date().toISOString() }).eq('session_id', session_id).catch(()=>{});
+    await supabase.from('desires').update({ attachment: 0.2, updated_at: new Date().toISOString() }).eq('session_id', session_id);
+
 
     // 2. 加载设置
     const { data: settings } = await supabase
@@ -1053,7 +1054,7 @@ app.post('/api/mood/generate', async (req, res) => {
     const mood = await generateMoodLine(userText, botText, api_key, api_base, model);
     console.log('[心声] 生成结果:', mood?.slice(0,30)||'空');
     if (mood && !content) {
-      supabase.from('settings').update({ mood_line: mood }).eq('id', 1).catch(() => {});
+      await supabase.from('settings').update({ mood_line: mood }).eq('id', 1);
     }
     res.json({ mood });
   } catch(e) {
