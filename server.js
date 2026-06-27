@@ -1277,14 +1277,42 @@ app.post('/api/call/stream', async (req, res) => {
       sentence = sentence.trim();
       if (!sentence) return;
       fullReply += sentence;
+      
+      // 前端先发送中文文本，用于在悬浮窗上展示
       send({ type: 'text', text: sentence, idx: sentenceIdx });
+
+      // 👇 核心修复：把遗漏的 DeepSeek 翻译补回来！
+      let ttsText = sentence;
+      if (tts_lang === 'en') {
+        try {
+          const deepseekKey = process.env.DEEPSEEK_API_KEY;
+          if (deepseekKey) {
+            const transRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + deepseekKey },
+              body: JSON.stringify({
+                model: 'deepseek-chat',
+                max_tokens: 300,
+                temperature: 0.3,
+                messages: [{ role: 'user', content: `Translate the following Chinese text to natural English. Output only the translation, nothing else:\n${sentence}` }],
+              }),
+            });
+            const transData = await transRes.json();
+            if (transData.choices?.[0]?.message?.content) {
+              ttsText = transData.choices[0].message.content.trim();
+            }
+          }
+        } catch(e) {
+          console.log('通话翻译失败:', e.message);
+        }
+      }
 
       try {
         if (tts_channel === 'elevenlabs' && process.env.ELEVENLABS_API_KEY) {
            const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID||'9CFLhe6Ni1wD0VC6wLLb'}`, {
              method: 'POST',
              headers: { 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY },
-             body: JSON.stringify({ text: sentence.slice(0,200), model_id: 'eleven_multilingual_v2' })
+             body: JSON.stringify({ text: ttsText.slice(0,200), model_id: 'eleven_multilingual_v2' })
            });
            if (elRes.ok) {
              const buf = await elRes.arrayBuffer();
@@ -1295,15 +1323,17 @@ app.post('/api/call/stream', async (req, res) => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.MINIMAX_API_KEY },
             body: JSON.stringify({
-              model: 'speech-02-turbo', text: sentence.slice(0, 200), stream: false,
+              model: 'speech-02-turbo', 
+              text: ttsText.slice(0, 200), // 👈 发送翻译后的英文
+              stream: false,
               voice_setting: { voice_id: process.env.MINIMAX_VOICE_ID||'clone_voice_1782395480634', speed: 1.0, vol: 1.0, pitch: 0, emotion: 'calm' },
               audio_setting: { sample_rate: 32000, bitrate: 128000, format: 'mp3' },
+              language_boost: tts_lang === 'en' ? 'English' : 'Chinese' // 👈 补上 language_boost
             }),
           });
           if (ttsRes.ok) {
             const ttsData = await ttsRes.json();
             if (ttsData.base_resp?.status_code === 0 && ttsData.data?.audio) {
-              // 👈 核心修复：把 hex 转成 base64
               const audioBase64 = Buffer.from(ttsData.data.audio, 'hex').toString('base64');
               send({ type: 'audio', audio: audioBase64, idx: sentenceIdx, format: 'mp3' });
             }
@@ -1354,6 +1384,7 @@ app.post('/api/call/stream', async (req, res) => {
     res.end();
   }
 });
+
 
 
 // 获取通话记录列表
