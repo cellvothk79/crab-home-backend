@@ -1403,6 +1403,13 @@ app.get('/api/call/records', async (req, res) => {
   res.json(data || []);
 });
 
+// 👉 新增的删除通话记录接口
+app.delete('/api/call/records/:id', async (req, res) => {
+  const { error } = await supabase.from('call_records').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
 // 上传用户录音到 Supabase Storage
 app.post('/api/voice/upload', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '没有收到音频文件' });
