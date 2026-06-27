@@ -1203,23 +1203,20 @@ app.post('/api/call/save', async (req, res) => {
 //  通话专用 streaming 接口（按句切分+每句独立TTS）
 // ═══════════════════════════════════════
 app.post('/api/call/stream', async (req, res) => {
-  const { session_id, content, api_key, api_base, model } = req.body;
+  const { session_id, content, api_key, api_base, model, tts_channel, tts_lang } = req.body;
   if (!session_id || !content) return res.status(400).json({ error: '缺少参数' });
 
   const useApiKey = api_key || process.env.CLAUDE_API_KEY || '';
   const useApiBase = (api_base || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
   const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
-  // SSE 头
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
-
   const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
   try {
-    // 加载历史消息（轻量，只取最近10轮）
     const { data: history } = await supabase
       .from('messages').select('role, content')
       .eq('session_id', session_id)
@@ -1227,14 +1224,28 @@ app.post('/api/call/stream', async (req, res) => {
       .order('created_at', { ascending: false })
       .limit(20);
 
-    let msgs = [...(history || [])].reverse();
+    let rawMsgs = [...(history || [])].reverse();
+    let msgs = [];
+    // 👈 核心修复：合并连续同角色消息，防止严格的 API 报错断开
+    for (const m of rawMsgs) {
+        if (msgs.length > 0 && msgs[msgs.length - 1].role === m.role) {
+            msgs[msgs.length - 1].content += '\n' + m.content;
+        } else {
+            msgs.push({ role: m.role, content: m.content });
+        }
+    }
     while (msgs.length > 0 && msgs[0].role === 'assistant') msgs.shift();
+    
     if (msgs.length === 0) msgs = [{ role: 'user', content }];
-    else msgs.push({ role: 'user', content: '[通话中] ' + content });
+    else {
+        if (msgs[msgs.length - 1].role === 'user') {
+            msgs[msgs.length - 1].content += '\n[通话中] ' + content;
+        } else {
+            msgs.push({ role: 'user', content: '[通话中] ' + content });
+        }
+    }
 
     const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
-
-    // streaming 请求
     const apiRes = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -1253,11 +1264,11 @@ app.post('/api/call/stream', async (req, res) => {
     });
 
     if (!apiRes.ok) {
-      send({ type: 'error', error: `API ${apiRes.status}` });
+      const err = await apiRes.json().catch(()=>({}));
+      send({ type: 'error', error: err.error?.message || `API ${apiRes.status}` });
       res.end(); return;
     }
 
-    // 按句切分逻辑
     let buffer = '';
     let fullReply = '';
     let sentenceIdx = 0;
@@ -1267,98 +1278,83 @@ app.post('/api/call/stream', async (req, res) => {
       sentence = sentence.trim();
       if (!sentence) return;
       fullReply += sentence;
-
-      // 发文字
       send({ type: 'text', text: sentence, idx: sentenceIdx });
 
-      // 调TTS
+      // 👈 核心修复：同步前端的语音设置，支持多通道兜底
       try {
-        const minimaxKey = process.env.MINIMAX_API_KEY;
-        const minimaxVoiceId = process.env.MINIMAX_VOICE_ID || 'clone_voice_1782395480634';
-        const minimaxGroupId = process.env.MINIMAX_GROUP_ID || '2067156952080720056';
-
-        if (minimaxKey) {
-          const ttsRes = await fetch(`https://api.minimaxi.com/v1/t2a_v2?GroupId=${minimaxGroupId}`, {
+        if (tts_channel === 'elevenlabs' && process.env.ELEVENLABS_API_KEY) {
+           const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID||'9CFLhe6Ni1wD0VC6wLLb'}`, {
+             method: 'POST',
+             headers: { 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY },
+             body: JSON.stringify({ text: sentence.slice(0,200), model_id: 'eleven_multilingual_v2' })
+           });
+           if (elRes.ok) {
+             const buf = await elRes.arrayBuffer();
+             send({ type: 'audio', audio: Buffer.from(buf).toString('base64'), idx: sentenceIdx, format: 'mp3' });
+           }
+        } else if (process.env.MINIMAX_API_KEY) {
+          const ttsRes = await fetch(`https://api.minimaxi.com/v1/t2a_v2?GroupId=${process.env.MINIMAX_GROUP_ID||'2067156952080720056'}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + minimaxKey },
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.MINIMAX_API_KEY },
             body: JSON.stringify({
-              model: 'speech-02-turbo',
-              text: sentence.slice(0, 200),
-              stream: false,
-              voice_setting: { voice_id: minimaxVoiceId, speed: 1.0, vol: 1.0, pitch: 0, emotion: 'calm' },
+              model: 'speech-02-turbo', text: sentence.slice(0, 200), stream: false,
+              voice_setting: { voice_id: process.env.MINIMAX_VOICE_ID||'clone_voice_1782395480634', speed: 1.0, vol: 1.0, pitch: 0, emotion: 'calm' },
               audio_setting: { sample_rate: 32000, bitrate: 128000, format: 'mp3' },
             }),
           });
           if (ttsRes.ok) {
             const ttsData = await ttsRes.json();
             if (ttsData.base_resp?.status_code === 0 && ttsData.data?.audio) {
-              const audioBase64 = Buffer.from(ttsData.data.audio, 'hex').toString('base64');
-              send({ type: 'audio', audio: audioBase64, idx: sentenceIdx, format: 'mp3' });
+              send({ type: 'audio', audio: ttsData.data.audio, idx: sentenceIdx, format: 'mp3' });
             }
           }
         }
-      } catch(e) {
-        console.log('句子TTS失败:', e.message);
-      }
+      } catch(e) {}
       sentenceIdx++;
     };
 
-    // 读取 streaming 响应
     const reader = apiRes.body.getReader();
     const decoder = new TextDecoder();
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       const chunk = decoder.decode(value);
       const lines = chunk.split('\n');
-
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
         if (data === '[DONE]') continue;
         try {
           const evt = JSON.parse(data);
-          // Anthropic streaming 格式
           if (evt.type === 'content_block_delta' && evt.delta?.text) {
             buffer += evt.delta.text;
-            // 检查是否可以切句
             const match = SPLIT_RE.exec(buffer);
             if (match) {
               const cutAt = match.index + match[0].length;
-              const sentence = buffer.slice(0, cutAt);
+              await flushSentence(buffer.slice(0, cutAt));
               buffer = buffer.slice(cutAt);
-              await flushSentence(sentence);
             }
-          }
-          // OpenAI 格式兼容
-          else if (evt.choices?.[0]?.delta?.content) {
+          } else if (evt.choices?.[0]?.delta?.content) {
             buffer += evt.choices[0].delta.content;
             const match = SPLIT_RE.exec(buffer);
             if (match) {
               const cutAt = match.index + match[0].length;
-              const sentence = buffer.slice(0, cutAt);
+              await flushSentence(buffer.slice(0, cutAt));
               buffer = buffer.slice(cutAt);
-              await flushSentence(sentence);
             }
           }
         } catch(e) {}
       }
     }
-
-    // 剩余内容
     if (buffer.trim()) await flushSentence(buffer);
-
     send({ type: 'done', fullReply });
     res.end();
-
   } catch(e) {
-    console.error('call/stream 失败:', e.message);
     send({ type: 'error', error: e.message });
     res.end();
   }
 });
+
 
 // 获取通话记录列表
 app.get('/api/call/records', async (req, res) => {
