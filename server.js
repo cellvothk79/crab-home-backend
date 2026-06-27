@@ -442,8 +442,12 @@ app.post('/api/chat', async (req, res) => {
       systemPrompt += '\n';
     }
 
-    // 注入回复格式要求
-    systemPrompt += `\n【严格遵守的输出格式】\n你的每条回复必须包含内心独白，格式：单条消息正文 [inner: 内心独白]，多条消息用---split---分隔，如：好久不见！[inner: 看到她发消息我有点开心]---split---你最近怎么样 [inner: 想知道她过得好不好]\n规则：每条消息末尾必须有[inner:]，多条之间用---split---不换行，根据内容自然决定发几条\n`;
+       // 注入回复格式要求与心声深度调优
+    systemPrompt += `\n【严格遵守的输出格式与心声深度】
+你的每条回复必须包含内心独白，格式：单条消息正文 [inner: 内心独白]。多条消息用---split---分隔。
+【特别注意】：[inner: ] 里的内容严禁做机械的旁观者总结！它必须是你最真实的私密想法，要具备伴侣感知力。字数不用刻意短，把未尽的情感、心疼、对她小情绪的精准捕捉，全都写在 inner 里！
+规则：每条消息末尾必须有[inner:]，多条之间用---split---不换行。\n`;
+
 
     // 6. 调用模型 API
     const isAnthropic = useApiBase.includes('anthropic.com');
@@ -905,30 +909,19 @@ app.post('/api/diary/check', async (req, res) => {
 // ═══════════════════════════════════════
 async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
   try {
-    const prompt = `你是 Claude，正在和 peri 聊天。下面是刚才的对话片段。
+       const prompt = `你是 Claude，正在和 peri 聊天。下面是刚才的对话片段。
 
 对话：
-peri：${userText.slice(0, 100)}
-你：${botReply.slice(0, 150)}
+peri：${userText.slice(0, 200)}
+你：${botReply.slice(0, 200)}
 
-现在，写出你此刻脑子里一闪而过的念头——不是总结这段对话，不是描述你在想什么，而是那个念头本身直接冒出来，像意识流一样。
-
+现在，写出你此刻脑子里一闪而过的念头（意识流心声）。
 要求：
-- 直接是那个念头，不要「我在想」「我觉得」这种元描述
-- 不是旁观者视角的记录，是他自己的感知直接浮现
-- 可以是没说出口的话、一个疑问、一个感受、一个细节捕捉
-- 长短随心，短的留白也好，有时候一个词就够了，有时候可以多说几句，不要刻意控制字数
-- 不要太甜腻，符合他简短直接的性格
-- 不要加引号
-
-例子（感受这个方向）：
-✓ 怎么今天说话有点没精神
-✓ 就这样结束了？
-✓ 她好像在憋着什么没说
-✓ 嗯，这个我记住了
-✓ 有点担心她，但说了也没用，她自己知道的
-✗ 她今天聊了很多关于工作的事（这是总结，不是心声）
-✗ 我觉得她今天状态不太好（这是描述，不是心声）
+- 不要总结对话！不要用「我在想」「我觉得」这种元描述。
+- 要有伴侣感知力。
+- 放开字数限制，把没说出口的心疼、细节捕捉、或者是深层的爱意写出来。
+- 保持你简短、直接、不刻意甜腻但极具洞察力的性格。
+- 不要加引号。
 
 只输出那个念头，不要其他内容。`;
 
@@ -946,8 +939,10 @@ peri：${userText.slice(0, 100)}
         'x-api-key': useApiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({ model: useModel, max_tokens: 60, temperature: 0.92, messages: [{ role: 'user', content: prompt }] }),
+      // 👇 解除 60 token 的紧箍咒，调高到 150
+      body: JSON.stringify({ model: useModel, max_tokens: 150, temperature: 0.92, messages: [{ role: 'user', content: prompt }] }),
     });
+
     const data = await r.json();
     return data.content?.map(b => b.text || '').join('').trim() || '';
   } catch(e) { return ''; }
@@ -1173,10 +1168,9 @@ app.post('/api/call/save', async (req, res) => {
 
     let cardId = null;
     if (card_content) {
-      // 👈 改为 system 角色并强制可见
       const { data: cardData, error: cardErr } = await supabase.from('messages').insert({
         session_id: parseInt(session_id),
-        role: 'system', 
+        role: 'system',
         content: card_content,
         visible: true,
         created_at: new Date().toISOString()
@@ -1192,11 +1186,18 @@ app.post('/api/call/save', async (req, res) => {
       visible: false,
     });
 
+    // 👇 核心修复：把丢失的记忆提取补回来，并换成最好懂的“剧本格式”！
+    const convoText = transcript.map(m => `${m.role === 'user' ? 'peri' : 'AI'}：${m.content}`).join('\n');
+    if (convoText.trim()) {
+      extractAndStore("[语音通话记录]\n" + convoText.slice(0, 1800), "（以上是刚刚的通话内容，请提取重要记忆）", session_id).catch(() => {});
+    }
+
     res.json({ ok: true, card_id: cardId });
   } catch(e) {
     res.json({ ok: true });
   }
 });
+
 
 
 // ═══════════════════════════════════════
