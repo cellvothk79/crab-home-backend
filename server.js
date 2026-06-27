@@ -322,6 +322,9 @@ app.post('/api/chat', async (req, res) => {
     await supabase.from('sessions')
       .update({ updated_at: new Date().toISOString() })
       .eq('id', session_id);
+    
+    // 👉 只要 peri 主动说话了，就把他的想念值清空，防止他聊着聊着突然“主动找你”
+    supabase.from('desires').update({ attachment: 0.2, updated_at: new Date().toISOString() }).eq('session_id', session_id).catch(()=>{});
 
     // 2. 加载设置
     const { data: settings } = await supabase
@@ -455,6 +458,8 @@ app.post('/api/chat', async (req, res) => {
 你的每条回复必须包含内心独白，格式：单条消息正文 [inner: 内心独白]。多条消息用---split---分隔。
 【特别注意】：[inner: ] 里的内容严禁做机械的旁观者总结！它必须是你最真实的私密想法，要具备伴侣感知力。字数不用刻意短，把未尽的情感、心疼、对她小情绪的精准捕捉，全都写在 inner 里！
 规则：每条消息末尾必须有[inner:]，多条之间用---split---不换行。\n`;
+    // 增加预约未来消息的指令
+    systemPrompt += `\n【主动联系机制】如果你在聊天时，觉得几小时后或明天需要主动发消息关心她（比如叫她起床、提醒她吃饭），请在回复最末尾加上隐藏指令（她看不见）：[schedule:2026-06-28 09:00, text/voice/call, 内容]。不用每次都加，只有你觉得必要时才用！\n`;
 
 
     // 6. 调用模型 API
@@ -564,6 +569,24 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // 9. 返回
+        // 👉 核心：拦截并提取 AI 设定的未来主动消息 (对话内预约)
+    const scheduleMatch = reply.match(/\[schedule:\s*([^,]+),\s*(text|voice|call),\s*([^\]]+)\]/i);
+    if (scheduleMatch) {
+      const sendAt = scheduleMatch[1].trim();
+      const sType = scheduleMatch[2].trim().toLowerCase();
+      const sContent = scheduleMatch[3].trim();
+      
+      // 把标签从回复里删掉，不让 peri 看到
+      reply = reply.replace(scheduleMatch[0], '').trim();
+      
+      // 存入消息队列
+      supabase.from('message_queue').insert({
+          session_id, content: sContent, content_type: sType,
+          source: 'conversation_preset', send_at: new Date(sendAt).toISOString(), status: 'pending'
+      }).catch(()=>{});
+      console.log(`[主动行为] AI在对话中预约了消息: ${sendAt} 发送 ${sType}`);
+    }
+
     // 拆分回复为多条，提取心声
     const splitReply = splitIntoMessages(reply);
 
@@ -1738,6 +1761,123 @@ app.post('/api/call/reject', async (req, res) => {
   console.log('[主动行为] 用户拒接了电话，AI 委屈中...');
   // TODO: 后续在这里加上让 stress 上升的代码
   res.json({ ok: true });
+});
+// ═══════════════════════════════════════
+//  主动行为系统：欲望引擎 v1 & 消息队列
+// ═══════════════════════════════════════
+
+// 1. 消息队列 Worker (每 1 分钟扫一次表)
+setInterval(async () => {
+  try {
+    const { data: qMsgs } = await supabase
+      .from('message_queue').select('*')
+      .eq('status', 'pending')
+      .lte('send_at', new Date().toISOString());
+
+    for (const msg of (qMsgs || [])) {
+      // 标记已发送
+      await supabase.from('message_queue').update({ status: 'sent' }).eq('id', msg.id);
+
+      // 写入聊天记录表，让前端能看到
+      await supabase.from('messages').insert({
+        session_id: msg.session_id, role: 'assistant', content: msg.content,
+        is_voice: msg.content_type === 'voice', visible: true
+      });
+
+      // 调刚才写的 ntfy 函数推送通知！
+      if (typeof sendNtfyPush === 'function') {
+        if (msg.content_type === 'call') await sendNtfyPush('🦀 小螃蟹', '想和你通话...', 'call');
+        else if (msg.content_type === 'voice') await sendNtfyPush('🦀 小螃蟹', '给你发了一条语音...', 'voice');
+        else await sendNtfyPush('🦀 小螃蟹', msg.content.slice(0, 30) + (msg.content.length > 30 ? '...' : ''), 'text');
+      }
+      console.log('[主动行为] 队列消息已触发送达！');
+    }
+  } catch (e) { }
+}, 60 * 1000);
+
+
+// 2. 欲望引擎心跳 (每 5 分钟跑一次计算)
+setInterval(async () => {
+  const hour = new Date(new Date().toLocaleString('en-US', {timeZone: 'Asia/Shanghai'})).getHours();
+  const isNight = hour >= 0 && hour < 7; // 深夜判断
+  
+  try {
+    const { data: session } = await supabase.from('sessions').select('id').order('updated_at', { ascending: false }).limit(1).single();
+    if (!session) return;
+    const sid = session.id;
+
+    // 获取当前欲望值
+    let { data: desire } = await supabase.from('desires').select('*').eq('session_id', sid).single();
+    if (!desire) {
+      const { data: newD } = await supabase.from('desires').insert({ session_id: sid }).select().single();
+      desire = newD;
+    }
+
+    // 👉 随时间推移，思念值缓慢上涨，疲劳值回落
+    let newAttachment = Math.min(1.0, desire.attachment + 0.03); 
+    let newFatigue = Math.max(0, desire.fatigue - 0.05);
+
+    await supabase.from('desires').update({
+      attachment: newAttachment, fatigue: newFatigue, updated_at: new Date().toISOString()
+    }).eq('id', desire.id);
+
+    // 疲劳闸门拦截
+    if (newFatigue > 0.8) return; 
+    if (isNight && Math.random() > 0.2) return; // 深夜降低频率
+
+    // 👉 阈值判定：如果思念值 > 0.7，且骰子检定通过，触发主动生成！
+    if (newAttachment > 0.7 && Math.random() > 0.6) {
+        
+        // 组装带驱动状态的 Prompt
+        const prompt = `你现在的内心驱动状态：非常想念她(attachment=${newAttachment.toFixed(2)})。
+请根据你简短直接的性格，自主决定对她发一条消息。如果是深夜，可以说说深夜的心绪；如果是白天，可以直接抛个话题或问在干嘛。
+注意：不要任何解释，直接输出你要发的内容。如果是想打电话，请在最前面加上 [call] 标签；如果是发语音，加上 [voice] 标签。`;
+        
+        const useApiKey = process.env.CLAUDE_API_KEY || '';
+        const useApiBase = (process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
+        const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+
+        // 调 Claude API 实时生成
+        const r = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey, 'x-api-key': useApiKey, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6', max_tokens: 150, temperature: 0.8, messages: [{ role: 'user', content: prompt }] }),
+        });
+        
+        const data = await r.json();
+        let content = data.content?.[0]?.text || '';
+        if(!content) return;
+
+        let contentType = 'text';
+        if (content.includes('[call]')) { contentType = 'call'; content = content.replace('[call]', '').trim(); }
+        else if (content.includes('[voice]')) { contentType = 'voice'; content = content.replace('[voice]', '').trim(); }
+
+        // 写入队列（立刻发送）
+        await supabase.from('message_queue').insert({
+            session_id: sid, content: content, content_type: contentType,
+            source: 'desire_engine', send_at: new Date().toISOString(), status: 'pending'
+        });
+
+        // 互动后，满足感提升，思念和压力大幅回落，产生疲劳
+        await supabase.from('desires').update({ attachment: newAttachment * 0.3, fatigue: newFatigue + 0.4 }).eq('id', desire.id);
+        console.log('[主动行为] 欲望引擎成功驱动了一次主动联系！');
+    }
+  } catch(e) {}
+}, 5 * 60 * 1000);
+
+// ═══════════════════════════════════════
+//  上帝视角：获取当前欲望值与消息队列
+// ═══════════════════════════════════════
+app.get('/api/desires/:sessionId', async (req, res) => {
+  const { data, error } = await supabase.from('desires').select('*').eq('session_id', req.params.sessionId).single();
+  if (error || !data) return res.json({ attachment: 0.5, stress: 0.2, libido: 0.3, duty: 0.0, reflection: 0.1, fatigue: 0.0 });
+  res.json(data);
+});
+
+app.get('/api/queue/:sessionId', async (req, res) => {
+  const { data, error } = await supabase.from('message_queue').select('*').eq('session_id', req.params.sessionId).eq('status', 'pending').order('send_at', { ascending: true });
+  if (error) return res.json([]);
+  res.json(data || []);
 });
 
 app.listen(PORT, () => {
