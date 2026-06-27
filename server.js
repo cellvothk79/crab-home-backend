@@ -1226,7 +1226,6 @@ app.post('/api/call/stream', async (req, res) => {
 
     let rawMsgs = [...(history || [])].reverse();
     let msgs = [];
-    // 👈 核心修复：合并连续同角色消息，防止严格的 API 报错断开
     for (const m of rawMsgs) {
         if (msgs.length > 0 && msgs[msgs.length - 1].role === m.role) {
             msgs[msgs.length - 1].content += '\n' + m.content;
@@ -1280,7 +1279,6 @@ app.post('/api/call/stream', async (req, res) => {
       fullReply += sentence;
       send({ type: 'text', text: sentence, idx: sentenceIdx });
 
-      // 👈 核心修复：同步前端的语音设置，支持多通道兜底
       try {
         if (tts_channel === 'elevenlabs' && process.env.ELEVENLABS_API_KEY) {
            const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID||'9CFLhe6Ni1wD0VC6wLLb'}`, {
@@ -1305,7 +1303,9 @@ app.post('/api/call/stream', async (req, res) => {
           if (ttsRes.ok) {
             const ttsData = await ttsRes.json();
             if (ttsData.base_resp?.status_code === 0 && ttsData.data?.audio) {
-              send({ type: 'audio', audio: ttsData.data.audio, idx: sentenceIdx, format: 'mp3' });
+              // 👈 核心修复：把 hex 转成 base64
+              const audioBase64 = Buffer.from(ttsData.data.audio, 'hex').toString('base64');
+              send({ type: 'audio', audio: audioBase64, idx: sentenceIdx, format: 'mp3' });
             }
           }
         }
