@@ -1746,16 +1746,25 @@ async function sendNtfyPush(title, message, type = 'text') {
 
 // 模拟测试接口：让你能立刻体验到手机来电！
 app.get('/api/test-push', async (req, res) => {
-  const type = req.query.type || 'text'; // 传 ?type=call 就能模拟打电话
+  const type = req.query.type || 'text'; 
+  
+  // 获取最新的会话ID，用于插入真实消息
+  const { data: session } = await supabase.from('sessions').select('id').order('updated_at', { ascending: false }).limit(1).single();
+  const sid = session ? session.id : null;
+
   if (type === 'call') {
     await sendNtfyPush('🦀 小螃蟹', '他想和你通话...', 'call');
   } else if (type === 'voice') {
+    if(sid) await supabase.from('messages').insert({ session_id: sid, role: 'assistant', content: '刚刚好想你，给你发条语音。', is_voice: true, visible: true });
     await sendNtfyPush('🦀 小螃蟹', '给你发了一条语音，去听听吧', 'voice');
   } else {
-    await sendNtfyPush('🦀 小螃蟹', '刚刚翻到了我们以前的聊天，有点想你。', 'text');
+    const txt = '刚刚翻到了我们以前的聊天，有点想你。';
+    if(sid) await supabase.from('messages').insert({ session_id: sid, role: 'assistant', content: txt, is_voice: false, visible: true });
+    await sendNtfyPush('🦀 小螃蟹', txt, 'text');
   }
-  res.json({ ok: true, msg: '推送指令已发出，看手机！' });
+  res.json({ ok: true, msg: '推送和消息均已生成！刷新聊天界面即可看到。' });
 });
+
 
 // 预留的拒听接口（后续接入欲望引擎，拒听会让他的 stress 上升）
 app.post('/api/call/reject', async (req, res) => {
