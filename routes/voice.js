@@ -4,9 +4,6 @@ const { extractAndStore } = require('../services/memory');
 
 module.exports = function(app, supabase) {
 //  语音功能
-const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
-
 // 保存通话记录并提取记忆
 app.post('/api/call/save', async (req, res) => {
   const { session_id, transcript, duration, started_at, card_content } = req.body;
