@@ -1,5 +1,71 @@
 module.exports = function(app, supabase) {
-  
+
+  // ⚠️ 注意：/api/media/cover 必须在 /api/media/:sessionId 前面注册！
+  // 否则 Express 会把 "cover" 当作 sessionId 参数匹配，封面接口永远不会被调用！
+
+  // 👉 封面搜图：TMDB(影视) + RAWG(游戏) + Google兜底
+  // 需要环境变量：TMDB_API_KEY（必须）、RAWG_API_KEY（可选，游戏封面用）
+  app.get('/api/media/cover', async (req, res) => {
+    const { title, type } = req.query;
+    if (!title) return res.json({ url: '' });
+
+    const TMDB_KEY = process.env.TMDB_API_KEY || '';
+    const RAWG_KEY = process.env.RAWG_API_KEY || '';
+
+    try {
+      // === 游戏类型：优先 RAWG ===
+      if (type === 'game' && RAWG_KEY) {
+        try {
+          const rawgRes = await fetch(`https://api.rawg.io/api/games?key=${RAWG_KEY}&search=${encodeURIComponent(title)}&page_size=1`);
+          const rawgData = await rawgRes.json();
+          if (rawgData.results?.[0]?.background_image) {
+            return res.json({ url: rawgData.results[0].background_image });
+          }
+        } catch(e) {}
+      }
+
+      // === 影视类型（或游戏RAWG没搜到）：用 TMDB ===
+      if (TMDB_KEY) {
+        try {
+          // 先搜电影
+          const movieRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}&language=zh-CN`);
+          const movieData = await movieRes.json();
+          if (movieData.results?.[0]?.poster_path) {
+            return res.json({ url: `https://image.tmdb.org/t/p/w500${movieData.results[0].poster_path}` });
+          }
+
+          // 电影没有，搜电视剧/动漫
+          const tvRes = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}&language=zh-CN`);
+          const tvData = await tvRes.json();
+          if (tvData.results?.[0]?.poster_path) {
+            return res.json({ url: `https://image.tmdb.org/t/p/w500${tvData.results[0].poster_path}` });
+          }
+        } catch(e) {}
+      }
+
+      // === 兜底：用 Google 搜图（不需要 key） ===
+      try {
+        const gHeaders = {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        };
+        const searchQuery = type === 'game' 
+          ? `${title} game cover art` 
+          : `${title} movie poster`;
+        const gRes = await fetch(`https://www.google.com/search?q=${encodeURIComponent(searchQuery)}&tbm=isch&tbs=isz:m`, { headers: gHeaders });
+        const gHtml = await gRes.text();
+        // 从 Google 图片搜索结果页提取第一张图片 URL
+        const imgMatch = gHtml.match(/\["(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp)(?:\?[^"]*)?)",\d+,\d+\]/i);
+        if (imgMatch?.[1]) {
+          return res.json({ url: imgMatch[1] });
+        }
+      } catch(e) {}
+
+      res.json({ url: '' });
+    } catch(e) {
+      res.json({ url: '' });
+    }
+  });
+
   // 1. 获取所有书影音记录（前端拿到后自己分 Tab：进行中/已完结）
   app.get('/api/media/:sessionId', async (req, res) => {
     const { data, error } = await supabase
@@ -10,56 +76,6 @@ module.exports = function(app, supabase) {
     
     if (error) return res.status(500).json({ error: error.message });
     res.json(data || []);
-  });
-
-  // 👉 核心黑科技：穿上防弹伪装衣，集成 豆瓣 + 苹果 + B站 终极搜图！
-  app.get('/api/media/cover', async (req, res) => {
-    const { title, type } = req.query;
-    if (!title) return res.json({ url: '' });
-
-    // 👇 就是这件“伪装衣”：假装自己是一台真实的 Mac 电脑和 Chrome 浏览器！
-    const headers = { 
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/json,image/webp,*/*;q=0.8',
-      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
-    };
-
-    try {
-      // 1. 先去抓“豆瓣”的海报 (最精准，穿上伪装衣后成功率极高)
-      try {
-        const dbRes = await fetch(`https://www.douban.com/search?q=${encodeURIComponent(title)}`, { headers });
-        const dbHtml = await dbRes.text();
-        const dbMatch = dbHtml.match(/src="(https:\/\/img\d\.doubanio\.com\/view\/photo\/s_ratio_poster\/public\/[^"]+)"/);
-        if (dbMatch && dbMatch[1]) return res.json({ url: dbMatch[1] });
-      } catch(e) {}
-
-      // 2. 如果豆瓣没搜到，电影用苹果官方库
-      if (type === 'movie') {
-        try {
-          const itunesRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(title)}&entity=movie&country=cn&limit=1`, { headers });
-          const itData = await itunesRes.json();
-          if (itData.results && itData.results[0]?.artworkUrl100) {
-            return res.json({ url: itData.results[0].artworkUrl100.replace('100x100bb', '600x900bb') }); // 换成高清大图
-          }
-        } catch(e) {}
-      }
-
-      // 3. 游戏或上面的都失败了，启动 B站 (Bilibili) 官方搜索 API！绝不拦截！
-      try {
-        const biliRes = await fetch(`https://api.bilibili.com/x/web-interface/search/all/v2?keyword=${encodeURIComponent(title)}`, { headers });
-        const biliData = await biliRes.json();
-        if (biliData?.data?.result) {
-          const media = biliData.data.result.find(r => r.result_type === 'media_ft' || r.result_type === 'media_bangumi'); // 找影视番剧
-          if (media?.data?.[0]?.cover) return res.json({ url: media.data[0].cover.startsWith('http') ? media.data[0].cover : 'https:' + media.data[0].cover });
-          const video = biliData.data.result.find(r => r.result_type === 'video'); // 找游戏解说封面
-          if (video?.data?.[0]?.pic) return res.json({ url: video.data[0].pic.startsWith('http') ? video.data[0].pic : 'https:' + video.data[0].pic });
-        }
-      } catch(e) {}
-
-      res.json({ url: '' });
-    } catch(e) {
-      res.json({ url: '' });
-    }
   });
 
 
