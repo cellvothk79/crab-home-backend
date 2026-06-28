@@ -269,6 +269,34 @@ app.post('/api/chat', async (req, res) => {
             await supabase.from('message_queue').insert({ session_id, content: sContent, content_type: sType, source: 'conversation_preset', send_at: new Date(sendAt).toISOString(), status: 'pending' });
 
     }
+    // 👉 核心新增：拦截情绪波动值，更新进欲望数据库，并从前端不可见！
+    const statsMatch = reply.match(/\[stats:\s*stress=([-0-9.]+),\s*libido=([-0-9.]+),\s*duty=([-0-9.]+),\s*reflection=([-0-9.]+)\]/i);
+    if (statsMatch) {
+      const d_stress = parseFloat(statsMatch[1]) || 0;
+      const d_libido = parseFloat(statsMatch[2]) || 0;
+      const d_duty = parseFloat(statsMatch[3]) || 0;
+      const d_reflection = parseFloat(statsMatch[4]) || 0;
+      
+      // 抹掉这段暗号，不让 peri 看到
+      reply = reply.replace(statsMatch[0], '').trim();
+
+      // 偷偷去数据库把他的情绪值拉满！
+      (async () => {
+        try {
+          const { data: curD } = await supabase.from('desires').select('*').eq('session_id', session_id).single();
+          if (curD) {
+            await supabase.from('desires').update({
+              stress: Math.max(0, Math.min(1, curD.stress + d_stress)),
+              libido: Math.max(0, Math.min(1, curD.libido + d_libido)),
+              duty: Math.max(0, Math.min(1, curD.duty + d_duty)),
+              reflection: Math.max(0, Math.min(1, curD.reflection + d_reflection)),
+              updated_at: new Date().toISOString()
+            }).eq('session_id', session_id);
+          }
+        } catch(e) {}
+      })();
+      console.log(`[情绪雷达] 波动已记录: stress=${d_stress}, libido=${d_libido}, duty=${d_duty}, reflection=${d_reflection}`);
+    }
 
     const splitReply = splitIntoMessages(reply);
     if (!callMode) {
