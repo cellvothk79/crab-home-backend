@@ -12,6 +12,29 @@ module.exports = function(app, supabase) {
     res.json(data || []);
   });
 
+    // 👉 核心黑科技：去百度图片自动抓取海报！
+  app.get('/api/media/cover', async (req, res) => {
+    const { title, type } = req.query;
+    if (!title) return res.json({ url: '' });
+    try {
+      // 电影搜"海报"，游戏搜"游戏封面"
+      const keyword = title + (type === 'movie' ? ' 电影海报' : ' 游戏封面');
+      const r = await fetch(`https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(keyword)}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      });
+      const html = await r.text();
+      // 用正则暴力匹配百度图片的真实高清地址
+      const match = html.match(/"objURL":"([^"]+)"/) || html.match(/"thumbURL":"([^"]+)"/);
+      if (match && match[1]) {
+        res.json({ url: match[1] });
+      } else {
+        res.json({ url: '' });
+      }
+    } catch(e) {
+      res.json({ url: '' });
+    }
+  });
+
   // 2. 新建/保存草稿（只存进度，不调大模型，绝对省钱！）
   app.post('/api/media', async (req, res) => {
     const { session_id, media_type, title, cover_url, time_segments, user_score, status } = req.body;
