@@ -527,7 +527,7 @@ app.post('/api/mood/generate', async (req, res) => {
     if (mood && !content) {
       await supabase.from('settings').update({ mood_line: mood }).eq('id', 1);
     }
-    res.json({ mood });
+    res.json({ mood, context_user: userText, context_ai: botText });
   } catch(e) {
     console.error('按需心声生成失败:', e.message);
     res.json({ mood: '', error: e.message });
