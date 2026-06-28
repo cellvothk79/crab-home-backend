@@ -180,9 +180,14 @@ function initDesireSystem(app) {
 注意：不要任何解释，直接输出你要发的内容。如果是想打电话，请在最前面加上 [call] 标签；如果是发语音，加上 [voice] 标签。${musicPrompt}`;
 
           
-          const useApiKey = process.env.CLAUDE_API_KEY || '';
-          const useApiBase = (process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
+                   // 👇 核心修复：不再读写死的环境变量，而是直接去查你最新切换的预设！
+          const { data: setObj } = await supabase.from('settings').select('api_key, api_base, model_name').limit(1).single();
+          
+          const useApiKey = setObj?.api_key || process.env.CLAUDE_API_KEY || '';
+          const useApiBase = (setObj?.api_base || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
+          const useModel = setObj?.model_name || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
           const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+
 
           const r = await fetch(apiUrl, {
             method: 'POST',
