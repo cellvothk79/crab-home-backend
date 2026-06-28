@@ -49,6 +49,14 @@ function initDesireSystem(app) {
     }
     res.json(data);
   });
+  
+  // 👉 获取心电图历史数据
+  app.get('/api/desires/:sessionId/history', async (req, res) => {
+    const { data } = await supabase.from('desire_history')
+      .select('*').eq('session_id', req.params.sessionId)
+      .order('created_at', { ascending: false }).limit(60); // 取最近60次心跳（大概几小时）
+    res.json(data ? data.reverse() : []);
+  });
 
   // 2. 获取隐藏消息队列
   app.get('/api/queue/:sessionId', async (req, res) => {
@@ -101,10 +109,16 @@ function initDesireSystem(app) {
             });
         }
 
-        if (msg.content_type === 'call') await sendNtfyPush('🦀 小螃蟹', '想和你通话...', 'call', msg.content);
-        else if (msg.content_type === 'voice') await sendNtfyPush('🦀 小螃蟹', '给你发了一条语音...', 'voice');
-        else await sendNtfyPush('🦀 小螃蟹', msg.content.slice(0, 30) + (msg.content.length > 30 ? '...' : ''), 'text');
+        // 👉 判断你最近 20 秒内有没有眨过眼睛（是否在线）
+        const isOnline = global.onlineSessions && global.onlineSessions.get(msg.session_id.toString()) > Date.now() - 20000;
         
+        if (!isOnline) {
+            // 只有你不在线，才推送到手机！
+            if (msg.content_type === 'call') await sendNtfyPush('🦀 小螃蟹', '想和你通话...', 'call', msg.content);
+            else if (msg.content_type === 'voice') await sendNtfyPush('🦀 小螃蟹', '给你发了一条语音...', 'voice');
+            else await sendNtfyPush('🦀 小螃蟹', msg.content.slice(0, 30) + (msg.content.length > 30 ? '...' : ''), 'text');
+        }
+
         console.log('[主动行为] 队列消息已触发送达！');
       }
     } catch (e) { }
@@ -165,6 +179,14 @@ function initDesireSystem(app) {
 
           // 发完后打回原形
           await supabase.from('desires').update({ attachment: 0.2, fatigue: newFatigue + 0.4 }).eq('id', desire.id);
+         
+        // 👉 同步记录进心电图历史表
+         await supabase.from('desire_history').insert({
+        session_id: sid, attachment: newAttachment, stress: desire.stress, 
+        libido: desire.libido, duty: desire.duty, reflection: desire.reflection, fatigue: newFatigue
+          });
+
+
           console.log('[主动行为] 欲望引擎成功驱动了一次主动联系！');
       }
     } catch(e) {
