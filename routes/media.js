@@ -3,6 +3,25 @@ const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 module.exports = function(app, supabase) {
+    // 👉 核心：Apple Music 官方无限制搜歌接口
+  app.get('/api/music/search', async (req, res) => {
+    const { q } = req.query;
+    if (!q) return res.json({});
+    try {
+      const r = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&country=cn&limit=1`);
+      const d = await r.json();
+      if (d.results && d.results.length > 0) {
+        const track = d.results[0];
+        res.json({ 
+            name: track.trackName, 
+            artist: track.artistName, 
+            cover: track.artworkUrl100.replace('100x100bb', '400x400bb'), // 换超清封面
+            preview: track.previewUrl // 苹果赠送的30秒试听
+        });
+      } else { res.json({}); }
+    } catch(e) { res.json({}); }
+  });
+
   // 👉 核心新增：上传本地封面到 Supabase
   app.post('/api/media/upload', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '没有收到图片' });
