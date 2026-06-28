@@ -122,6 +122,9 @@ app.post('/api/chat', async (req, res) => {
       memories.forEach((m, i) => { systemPrompt += `${i + 1}. ${m.summary}\n`; });
       systemPrompt += '\n';
     }
+   
+    // 👉 核心修复：严禁模仿时间戳
+    systemPrompt += `\n【格式红线】：你看到了聊天记录里的时间戳（如[06/28 10:46]），这只是系统给你参考时间的！你自己的回复中【绝对禁止】带任何时间戳前缀！直接说话！\n`;
 
     // 严禁大模型做啰嗦复述的指令
     systemPrompt += `\n【严禁复述与总结的红线】
