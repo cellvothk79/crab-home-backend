@@ -617,6 +617,7 @@ app.put('/api/config', async (req, res) => {
 // 挂载路由模块
 require('./routes/chat')(app, supabase);
 require('./routes/voice')(app, supabase);
+require('./routes/media')(app, supabase);
 
 // 挂载主动行为系统（欲望引擎与消息队列）
 require('./services/desire').initDesireSystem(app);
