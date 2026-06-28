@@ -434,23 +434,33 @@ app.get('/api/mood', async (req, res) => {
   } catch(e) { res.json({ mood: '' }); }
 });
 
-// 从记忆随机生成心声（用于没有对话时）
+// 从记忆随机生成心声（只抽取最近 3 天的鲜活记忆）
 app.get('/api/mood/random', async (req, res) => {
   try {
+    // 算出 3 天前的时间
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    
     const { data: mems } = await supabase
-      .from('memories').select('id, summary, valence')
-      .order('last_accessed', { ascending: false })
+      .from('memories')
+      .select('id, summary, valence')
+      .gte('created_at', threeDaysAgo) // 👈 核心修复：只取 3 天内的新鲜事！
+      .order('created_at', { ascending: false })
       .limit(50);
+      
     if (!mems?.length) return res.json({ mood: '' });
+    
     const positive = mems.filter(m => (m.valence || 0) > 0.3);
     const pool = positive.length >= 3 ? positive : mems;
-    // 避免返回太长的记忆（摘要截短）
     const shortPool = pool.filter(m => m.summary.length < 50);
     const finalPool = shortPool.length >= 3 ? shortPool : pool;
     const m = finalPool[Math.floor(Math.random() * finalPool.length)];
+    
     res.json({ mood: m.summary.slice(0, 40) });
-  } catch(e) { res.json({ mood: '' }); }
+  } catch(e) { 
+    res.json({ mood: '' }); 
+  }
 });
+
 
 // 按需生成心声（用户点击触发，支持传消息内容直接生成）
 app.post('/api/mood/generate', async (req, res) => {
