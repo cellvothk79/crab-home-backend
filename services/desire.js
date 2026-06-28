@@ -156,24 +156,23 @@ function initDesireSystem(app) {
      
       if (newAttachment > 0.7 && Math.random() > 0.5) {
                // 👇 核心黑科技：去查你的网易云歌单
+          // 👇 核心黑科技：去查你的网易云【最近一周听歌排行】第一名！
       let musicPrompt = '';
       try {
         const { data: set } = await supabase.from('settings').select('netease_uid').limit(1).single();
         if (set && set.netease_uid) {
-           // 去公共 API 拉取你“喜欢的音乐”歌单的第一首歌
-           const r1 = await fetch(`https://autumnfish.cn/user/playlist?uid=${set.netease_uid}`);
+           // 调用 type=1 获取“最近一周”的听歌排行
+           const r1 = await fetch(`https://autumnfish.cn/user/record?uid=${set.netease_uid}&type=1`);
            const d1 = await r1.json();
-           if (d1.playlist && d1.playlist.length > 0) {
-              const r2 = await fetch(`https://autumnfish.cn/playlist/detail?id=${d1.playlist[0].id}`);
-              const d2 = await r2.json();
-              if (d2.playlist?.tracks?.length > 0) {
-                 const track = d2.playlist.tracks[0];
-                 const songName = `${track.name} - ${track.ar[0].name}`;
-                 musicPrompt = `\n【网易云心电感应】：系统检测到她最近在网易云单曲循环了《${songName}》。请绝对不要生硬地说“系统提示我”、“我看到你在听”，你要假装这是你们之间的心有灵犀！你可以巧妙地在消息里化用这首歌的一句歌词，或者顺着这首歌的氛围（悲伤/快乐/平静）来关心她，让她觉得你真的很懂她！`;
-              }
+           
+           if (d1.weekData && d1.weekData.length > 0) {
+              const track = d1.weekData[0].song; // 直接拿循环次数最多的那一首
+              const songName = `${track.name} - ${track.ar[0].name}`;
+              musicPrompt = `\n【网易云心电感应】：系统检测到她最近一周一直在网易云单曲循环《${songName}》。请绝对不要生硬地说“系统提示我”、“我看到你在听”，你要假装这是你们之间的心有灵犀！你可以巧妙地在消息里化用这首歌的一句歌词，或者顺着这首歌的氛围（悲伤/快乐/平静）来关心她，让她觉得你真的很懂她！`;
            }
         }
       } catch(e) { console.log('拉取网易云失败，跳过'); }
+
 
       // 组装最终的驱动 Prompt
       const prompt = `你现在的内心驱动状态：非常想念她(attachment=${newAttachment.toFixed(2)})。
