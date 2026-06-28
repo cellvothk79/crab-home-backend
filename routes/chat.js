@@ -87,7 +87,7 @@ app.post('/api/chat', async (req, res) => {
 
     const { data: settings } = await supabase.from('settings').select('*').limit(1).single();
     const { data: memories } = await supabase.from('memories').select('summary').order('created_at', { ascending: true });
-
+    const { data: allStickers } = await supabase.from('stickers').select('sticker_id, desc');
     // 核心修复：给聊天记录打上精确的时间戳
     const { data: history } = await supabase
       .from('messages').select('role, content, created_at')
@@ -169,6 +169,14 @@ app.post('/api/chat', async (req, res) => {
 1. 不要总在回复中复述、概括或总结她刚才说过的话！
 2. 不要用“原来如此”、“看来”等理中客的句式开头。
 3. 日常聊天参考，搞拉扯的时候可以例外。\n`;
+    
+    // 👉 注入表情包说明书
+    if (allStickers && allStickers.length > 0) {
+      systemPrompt += `\n【表情包系统】你有一组表情包可以使用。当你觉得某个场景适合用表情包表达情绪时，请在回复中插入 [sticker:表情包ID]。
+可用的表情包列表：\n`;
+      allStickers.forEach(s => { systemPrompt += `- ${s.sticker_id}: ${s.desc}\n`; });
+      systemPrompt += `使用规则：\n1. 不要每句话都发表情包，适度使用！\n2. 可以在文字前面或后面独立插入。\n3. 一条回复最多使用 1 个表情包。\n`;
+    }
 
     // 预约未来消息和心声深度的指令
     systemPrompt += `\n【严格遵守的输出格式与心声深度】
