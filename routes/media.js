@@ -12,28 +12,48 @@ module.exports = function(app, supabase) {
     res.json(data || []);
   });
 
-  // 👉 核心黑科技：换用对云服务器更友好的 Bing 搜图！
+  // 👉 核心黑科技：Apple 官方库 + 搜狗 + 必应 三重无感搜图引擎！
   app.get('/api/media/cover', async (req, res) => {
     const { title, type } = req.query;
     if (!title) return res.json({ url: '' });
+
     try {
+      // 1. 电影优先用苹果 iTunes 官方接口（绝对不封IP，且是官方高清海报）
+      if (type === 'movie') {
+        try {
+          const itunesRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(title)}&entity=movie&country=cn&limit=1`);
+          const itData = await itunesRes.json();
+          if (itData.results && itData.results.length > 0 && itData.results[0].artworkUrl100) {
+            // 把苹果给的缩略图，强行替换成 600x900 的超高清大图
+            const highResUrl = itData.results[0].artworkUrl100.replace('100x100bb', '600x900bb');
+            return res.json({ url: highResUrl });
+          }
+        } catch(e) {}
+      }
+
+      // 2. 游戏或苹果没搜到的，用搜狗图片兜底（对云服务器几乎不拦截）
       const keyword = title + (type === 'movie' ? ' 电影海报' : ' 游戏封面');
-      // 访问必应图片搜索
-      const r = await fetch(`https://www.bing.com/images/search?q=${encodeURIComponent(keyword)}`, {
+      try {
+        const sogouRes = await fetch(`https://pic.sogou.com/pics?query=${encodeURIComponent(keyword)}`);
+        const sogouHtml = await sogouRes.text();
+        const sMatch = sogouHtml.match(/"picUrl":"(https?:\/\/[^"]+)"/);
+        if (sMatch && sMatch[1]) return res.json({ url: sMatch[1] });
+      } catch(e) {}
+
+      // 3. 终极兜底：必应国际版
+      const bingRes = await fetch(`https://www.bing.com/images/search?q=${encodeURIComponent(keyword)}`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
       });
-      const html = await r.text();
-      // 必应的高清大图藏在 murl 属性里
-      const match = html.match(/murl&quot;:&quot;(.*?)&quot;/);
-      if (match && match[1]) {
-        res.json({ url: match[1] }); // 成功抓到！
-      } else {
-        res.json({ url: '' });
-      }
+      const bingHtml = await bingRes.text();
+      const bMatch = bingHtml.match(/murl&quot;:&quot;(http[^&]+)&quot;/);
+      if (bMatch && bMatch[1]) return res.json({ url: bMatch[1] });
+
+      res.json({ url: '' });
     } catch(e) {
       res.json({ url: '' });
     }
   });
+
 
 
   // 2. 新建/保存草稿（只存进度，不调大模型，绝对省钱！）
