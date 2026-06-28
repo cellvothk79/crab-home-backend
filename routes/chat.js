@@ -77,6 +77,10 @@ app.post('/api/chat', async (req, res) => {
         const userMsgData = { session_id, role: 'user', content: txt, is_voice: isVoice };
         if (audioUrl && txt === userTexts[0]) userMsgData.audio_url = audioUrl;
         if (quoteContent && txt === userTexts[0]) userMsgData.quote_content = quoteContent;
+        // 👇 核心修复：把图片转成 Base64 格式，永远保存在数据库里！
+        if (imageBase64 && txt === userTexts[0]) {
+            userMsgData.image_url = `data:${imageMime};base64,${imageBase64}`;
+        }
         await supabase.from('messages').insert(userMsgData);
       }
     }
