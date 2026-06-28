@@ -179,14 +179,13 @@ app.post('/api/chat', async (req, res) => {
 
     // 👉 核心新增：白嫖大模型算力，顺手计算情绪雷达！
     // 👉 核心新增：完全放权给大模型，结合性格自主打分！底层已有 0-1 的物理安全墙！
+       // 👉 核心：遵从他的意志，只保留“回忆”这一个波动维度
     systemPrompt += `\n【隐蔽情绪变动雷达（必读）】
-请根据她话语的冲击力，以及你自身的人格设定，自主评估你当前内心4个维度的波动值（变动范围 -1.0 到 +1.0）。在回复的最末尾（所有内容的最后），必须隐蔽输出这一行：[stats: stress=0.0, libido=0.0, duty=0.0, reflection=0.0]
-评估规则（以下均为举例规则，你可以结合实际自己判断）：
-- 结合你的性格。如果她说了对于你来说极其伤人或极度撒娇的话，允许瞬间产生剧烈波动（直接 +0.8 甚至 +1.0 都可以）。如果是日常小事，就微调。
-- stress(压力): 被她凶、说不想理你、吵架、冷战时为正（越严重加越多）。被哄好为负。
-- libido(亲密): 被撩、叫宝宝、氛围暧昧时为正。被推开为负。
-- duty(管家): 发现她熬夜、没吃饭、需要你催促时为正。她乖乖听话为负。
-- reflection(回忆): 聊到往事、旧记忆时为正。纯日常闲聊为负。\n`;
+请敏锐地感知她的情绪和对话内容。评估你当前内心关于“回忆”维度的波动值（范围 -1.0 到 +1.0）。在回复的最末尾（所有内容的最后），必须隐蔽输出这一行：[stats: reflection=0.0]
+评估规则：
+- reflection(回忆): 当你们聊到往事、旧记忆、曾经的梦境或承诺时，数值大幅上升（为正）。如果是毫无关联的纯日常闲聊，数值下降（为负）。\n`;
+
+    const isAnthropic = useApiBase.includes('anthropic.com');
 
 
     systemPrompt += `\n【格式红线】：你看到了聊天记录里的时间戳（如[06/28 10:46]），这只是系统给你参考时间的！你自己的回复中【绝对禁止】带任何时间戳前缀！直接说话！\n`;
@@ -264,28 +263,24 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // 👉 核心新增：截获情绪值并存入数据库！
-    const statsMatch = reply.match(/\[stats:\s*stress=([-0-9.]+),\s*libido=([-0-9.]+),\s*duty=([-0-9.]+),\s*reflection=([-0-9.]+)\]/i);
+    // 👉 只拦截 reflection 
+    const statsMatch = reply.match(/\[stats:\s*reflection=([-0-9.]+)\]/i);
     if (statsMatch) {
-      const d_stress = parseFloat(statsMatch[1]) || 0;
-      const d_libido = parseFloat(statsMatch[2]) || 0;
-      const d_duty = parseFloat(statsMatch[3]) || 0;
-      const d_reflection = parseFloat(statsMatch[4]) || 0;
-      
+      const d_reflection = parseFloat(statsMatch[1]) || 0;
       reply = reply.replace(statsMatch[0], '').trim();
 
       try {
         const { data: curD } = await supabase.from('desires').select('*').eq('session_id', session_id).single();
         if (curD) {
           await supabase.from('desires').update({
-            stress: Math.max(0, Math.min(1, curD.stress + d_stress)),
-            libido: Math.max(0, Math.min(1, curD.libido + d_libido)),
-            duty: Math.max(0, Math.min(1, curD.duty + d_duty)),
             reflection: Math.max(0, Math.min(1, curD.reflection + d_reflection)),
             updated_at: new Date().toISOString()
           }).eq('session_id', session_id);
         }
       } catch(e) {}
+      console.log(`[情绪雷达] 回忆波动已记录: reflection=${d_reflection}`);
     }
+
 
     const splitReply = splitIntoMessages(reply);
     if (!callMode) {
