@@ -234,9 +234,10 @@ AI（我）：${botReply}
         const embedding = await getEmbedding(item.summary);
 
         // ── 去重：搜索相似度 > 0.85 的已有记忆 ──
+        // ── 去重：搜索相似度 > 0.85 的已有记忆 ──
         const { data: similar } = await supabase.rpc('search_memories', {
           query_embedding: embedding,
-          match_threshold: 0.70,
+          match_threshold: 0.85, // 👈 核心修复1：门槛从 0.70 提高到 0.85，拒绝瞎合并！
           match_count: 1,
         });
 
@@ -245,7 +246,9 @@ AI（我）：${botReply}
           const existing = similar[0];
           let mergedSummary = existing.summary;
           try {
-            const mergePrompt = `你是记忆整理助手。把下面两条相似的记忆合并成一句话（40字以内），保留最重要的信息，用叙事带情境的方式写，不要用分号拼接：
+            // 👇 核心修复2：给大模型下死命令，不同日期不同事件绝对不准瞎拼凑！
+            const mergePrompt = `你是记忆整理助手。把下面两条相似的记忆合并成一句话（40字以内），保留最重要的信息，用叙事带情境的方式写。
+【绝对红线】：仔细检查两条记忆的【时间】和【起因】。如果它们描述的是完全不同日期、不同起因的两件事（例如一件是因为工作晚睡，一件是因为封号晚睡），请直接丢弃旧原因，只保留【记忆2】的最新事实！绝对禁止把不相关的起因和时间瞎缝合在一起！
 
 记忆1：${existing.summary}
 记忆2：${item.summary}
@@ -263,7 +266,6 @@ AI（我）：${botReply}
               mergedSummary = refined;
             }
           } catch(e) {
-            // 合并失败则保留旧的，不拼接
             console.log('记忆合并提炼失败，保留原有记忆');
           }
 
@@ -279,6 +281,7 @@ AI（我）：${botReply}
           console.log('记忆强化:', mergedSummary.slice(0, 30));
           continue;
         }
+
 
         // ── 新记忆，直接写入 ──
         const importance = Math.max(0, Math.min(1, item.importance || 0.5));
