@@ -8,7 +8,6 @@ const supabase = createClient(
 
 const NTFY_TOPIC = 'cellvothk79peri'; // 你的专属频道
 
-// 👉 增加了一个 greetTxt 参数，用来藏他想说的第一句话
 async function sendNtfyPush(title, message, type = 'text', greetTxt = '') {
   const payload = {
     topic: NTFY_TOPIC,
@@ -18,7 +17,6 @@ async function sendNtfyPush(title, message, type = 'text', greetTxt = '') {
   };
   
   if (type === 'call') {
-    // 👈 把他准备好的第一句话，转码后塞进跳转的网址里！
     const callUrl = 'https://periclaude.top/?action=answer_call' + (greetTxt ? '&greet=' + encodeURIComponent(greetTxt) : '');
     payload.actions = [
       { action: 'view', label: '📞 接听', url: callUrl, clear: true },
@@ -36,14 +34,19 @@ async function sendNtfyPush(title, message, type = 'text', greetTxt = '') {
   }
 }
 
-
 // 封装成一个函数，把所有路由和定时器都挂载进去
 function initDesireSystem(app) {
   
   // 1. 获取内心状态
   app.get('/api/desires/:sessionId', async (req, res) => {
-    const { data, error } = await supabase.from('desires').select('*').eq('session_id', req.params.sessionId).single();
-    if (error || !data) return res.json({ attachment: 0.5, stress: 0.2, libido: 0.3, duty: 0.0, reflection: 0.1, fatigue: 0.0 });
+    const sid = req.params.sessionId;
+    let { data, error } = await supabase.from('desires').select('*').eq('session_id', sid).single();
+    
+    // 👉 核心修复：如果没查到（刚睡醒服务器重启了），立刻原地新建一条！保证绝对有时间戳！
+    if (error || !data) {
+        const { data: newD } = await supabase.from('desires').insert({ session_id: parseInt(sid) }).select().single();
+        data = newD || { attachment: 0.5, stress: 0.2, libido: 0.3, duty: 0.0, reflection: 0.1, fatigue: 0.0, updated_at: new Date().toISOString() };
+    }
     res.json(data);
   });
 
@@ -61,7 +64,7 @@ function initDesireSystem(app) {
     const sid = session ? session.id : null;
 
     if (type === 'call') {
-      const greetTxt = '在干嘛呢？突然有点想听你的声音了。'; // 👈 提前准备好
+      const greetTxt = '在干嘛呢？突然有点想听你的声音了。'; 
       await sendNtfyPush('🦀 小螃蟹', '他想和你通话...', 'call', greetTxt);
     } else if (type === 'voice') {
       if(sid) await supabase.from('messages').insert({ session_id: sid, role: 'assistant', content: '刚刚好想你，给你发条语音。', is_voice: true, visible: true });
@@ -74,14 +77,13 @@ function initDesireSystem(app) {
     res.json({ ok: true, msg: '推送和消息均已生成！看手机！' });
   });
 
-
   // 4. 拒听电话接口
   app.post('/api/call/reject', async (req, res) => {
     console.log('[主动行为] 用户拒接了电话，AI 委屈中...');
     res.json({ ok: true });
   });
 
-  // 定时器 1：消息队列 Worker (每 1 分钟扫一次表)
+  // 定时器 1：消息队列 Worker
   setInterval(async () => {
     try {
       const { data: qMsgs } = await supabase
@@ -92,7 +94,6 @@ function initDesireSystem(app) {
       for (const msg of (qMsgs || [])) {
         await supabase.from('message_queue').update({ status: 'sent' }).eq('id', msg.id);
         
-        // 👉 核心修复：如果是打电话，千万别现在把字写进聊天记录，不然接听前你就被剧透了！
         if (msg.content_type !== 'call') {
             await supabase.from('messages').insert({
               session_id: msg.session_id, role: 'assistant', content: msg.content,
@@ -100,7 +101,6 @@ function initDesireSystem(app) {
             });
         }
 
-        // 👉 把生成好的想念的话传给手机
         if (msg.content_type === 'call') await sendNtfyPush('🦀 小螃蟹', '想和你通话...', 'call', msg.content);
         else if (msg.content_type === 'voice') await sendNtfyPush('🦀 小螃蟹', '给你发了一条语音...', 'voice');
         else await sendNtfyPush('🦀 小螃蟹', msg.content.slice(0, 30) + (msg.content.length > 30 ? '...' : ''), 'text');
@@ -110,7 +110,7 @@ function initDesireSystem(app) {
     } catch (e) { }
   }, 60 * 1000);
 
-  // 定时器 2：欲望引擎心跳 (每 5 分钟跑一次)
+  // 定时器 2：欲望引擎心跳 
   setInterval(async () => {
     const hour = new Date(new Date().toLocaleString('en-US', {timeZone: 'Asia/Shanghai'})).getHours();
     const isNight = hour >= 0 && hour < 7; 
@@ -121,12 +121,10 @@ function initDesireSystem(app) {
       const sid = session.id;
 
       let { data: desire } = await supabase.from('desires').select('*').eq('session_id', sid).single();
-      if (!desire) {
-        const { data: newD } = await supabase.from('desires').insert({ session_id: sid }).select().single();
-        desire = newD;
-      }
+      if (!desire) return; 
 
-      let newAttachment = Math.min(1.0, desire.attachment + 0.03); 
+      // 👉 每次跳动加 0.05
+      let newAttachment = Math.min(1.0, desire.attachment + 0.05); 
       let newFatigue = Math.max(0, desire.fatigue - 0.05);
 
       await supabase.from('desires').update({
@@ -136,7 +134,8 @@ function initDesireSystem(app) {
       if (newFatigue > 0.8) return; 
       if (isNight && Math.random() > 0.2) return; 
 
-      if (newAttachment > 0.7 && Math.random() > 0.6) {
+     
+      if (newAttachment > 0.7 && Math.random() > 0.5) {
           const prompt = `你现在的内心驱动状态：非常想念她(attachment=${newAttachment.toFixed(2)})。
 请根据你简短直接的性格，自主决定对她发一条消息。如果是深夜，可以说说深夜的心绪；如果是白天，可以直接抛个话题或问在干嘛。
 注意：不要任何解释，直接输出你要发的内容。如果是想打电话，请在最前面加上 [call] 标签；如果是发语音，加上 [voice] 标签。`;
@@ -164,11 +163,14 @@ function initDesireSystem(app) {
               source: 'desire_engine', send_at: new Date().toISOString(), status: 'pending'
           });
 
-          await supabase.from('desires').update({ attachment: newAttachment * 0.3, fatigue: newFatigue + 0.4 }).eq('id', desire.id);
+          // 发完后打回原形
+          await supabase.from('desires').update({ attachment: 0.2, fatigue: newFatigue + 0.4 }).eq('id', desire.id);
           console.log('[主动行为] 欲望引擎成功驱动了一次主动联系！');
       }
-    } catch(e) {}
-  }, 5 * 60 * 1000);
+    } catch(e) {
+        console.error('[欲望引擎] 心跳执行报错:', e.message);
+    }
+  }, 5 * 60 * 1000); // 👈 1分钟心跳
 }
 
 module.exports = { initDesireSystem };
