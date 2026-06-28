@@ -71,6 +71,7 @@ app.post('/api/chat', async (req, res) => {
     const isVoice = req.body.is_voice || false;
     const audioUrl = req.body.audio_url || null;
     const callMode = req.body.call_mode || false;
+    const activeMusic = req.body.active_music || null; // 接收音乐状态
 
     if (!callMode) {
       for (const txt of userTexts) {
