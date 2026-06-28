@@ -185,7 +185,7 @@ app.post('/api/chat', async (req, res) => {
 评估规则：
 - reflection(回忆): 当你们聊到往事、旧记忆、曾经的梦境或承诺时，数值大幅上升（为正）。如果是毫无关联的纯日常闲聊，数值下降（为负）。\n`;
 
-    const isAnthropic = useApiBase.includes('anthropic.com');
+   
 
 
     systemPrompt += `\n【格式红线】：你看到了聊天记录里的时间戳（如[06/28 10:46]），这只是系统给你参考时间的！你自己的回复中【绝对禁止】带任何时间戳前缀！直接说话！\n`;
