@@ -1,4 +1,30 @@
+// 在 routes/media.js 文件的最开头加上这两行：
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+
 module.exports = function(app, supabase) {
+  // 👉 核心新增：上传本地封面到 Supabase
+  app.post('/api/media/upload', upload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: '没有收到图片' });
+    try {
+      // 生成唯一文件名
+      const fileName = `cover_${Date.now()}_${Math.floor(Math.random()*1000)}.jpg`;
+      
+      // 上传到我们建好的 media-covers 桶里
+      const { error } = await supabase.storage.from('media-covers').upload(fileName, req.file.buffer, { 
+        contentType: req.file.mimetype || 'image/jpeg', 
+        upsert: false 
+      });
+      
+      if (error) throw new Error(error.message);
+      
+      // 获取公开访问链接
+      const { data } = supabase.storage.from('media-covers').getPublicUrl(fileName);
+      res.json({ url: data.publicUrl });
+    } catch(e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // ⚠️ 注意：/api/media/cover 必须在 /api/media/:sessionId 前面注册！
   // 否则 Express 会把 "cover" 当作 sessionId 参数匹配，封面接口永远不会被调用！
