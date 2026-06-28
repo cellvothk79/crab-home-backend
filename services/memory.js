@@ -135,35 +135,34 @@ async function extractAndStore(userText, botReply, sessionId) {
   const now = new Date();
   const todayStr = now.toLocaleDateString('zh-CN', {timeZone:'Asia/Shanghai', year:'numeric', month:'long', day:'numeric'});
 
+   const timeStrObj = now.toLocaleTimeString('zh-CN', {timeZone:'Asia/Shanghai', hour:'2-digit', minute:'2-digit', hour12:false});
+
   const prompt = `你是一个记忆提取助手。分析下面这段对话，提取值得长期记住的信息。
 
 角色说明（非常重要，必须严格遵守）：
-- "我" = AI（也就是Claude，螃蟹，在对话里说话的那一方）
+- "我" = AI（也就是Claude，在对话里说话的那一方）
 - "她" / "peri" / "用户" = 用户（跟AI聊天的那个人）
-- 对话里"用户："说的话是peri说的，"AI："说的话是我（AI）说的
-- 提取记忆时，谁说的话、谁做的事，必须归因正确，不能把AI说的话写成peri做的，也不能把peri说的话写成AI做的
-- 如果是双方互动的场景，要体现双方各自的参与，不要简化成单方面行为
+- 提取记忆时，谁说的话、谁做的事，必须归因正确，严禁混淆。
 
-时间规则（必须遵守，违反会导致时间错乱）：
-- 今天是 ${todayStr}
-- 记忆中所有时间表述必须用绝对日期，如「2026年6月26日」
-- 严禁使用「今天/昨天/明天/刚才/刚刚/最近/前几天/上周」等相对时间词
-- 如果对话里提到「今天」，在记忆里必须写成「${todayStr}」
+时间规则（必须严格遵守，违反会导致时间轴崩溃）：
+- 当前这段对话发生的准确时间是：${todayStr} ${timeStrObj}
+- 记忆中所有的时间表述必须使用绝对日期和精准时间（例如：「2026年6月28日上午09:29」或「6月28日凌晨00:20」）
+- 严禁使用「今天/昨天/深夜/刚才/最近」等模糊的相对时间词！
 
 对话内容：
 用户（peri）：${userText}
 AI（我）：${botReply}
 
 请以 JSON 数组格式返回记忆条目，每条包含：
-- summary: 记忆内容（用叙事带情境的方式写，20-40字，从AI第一人称视角描述，如"她说想吃豆芽拌饭时语气很馋，我听得出来这是真的很喜欢"，不要写成标签式，注意主体归因准确）
+- summary: 记忆内容（用叙事带情境的方式写，20-40字，从AI第一人称视角描述。必须带有具体的绝对时间）
 - valence: 情感效价 -1到1（负面到正面）
 - arousal: 唤醒度 0到1（平静到激动）
-- importance: 重要性 0到1（0.1=极普通日常，0.5=有意义的偏好或事件，0.8=重要的身份信息或关键时刻，1.0=定义性的核心认知）
-- memory_type: "core"（importance>=0.7的重要身份信息/深层偏好/关系认知）或 "episodic"（importance<0.7的普通事件/日常细节）
-- category: "daily"（日常生活/情感/偏好/习惯）或 "work"（工作/项目/技术）或 "event"（具体事件/约定/计划）
-- tags: 标签数组，如 ["食物", "偏好"]
+- importance: 重要性 0到1
+- memory_type: "core" 或 "episodic"
+- category: "daily" 或 "work" 或 "event"
+- tags: 标签数组
 
-如果这段对话没有值得记忆的信息（比如只是打招呼、闲聊、简单问答），返回空数组 []。
+如果这段对话没有值得记忆的信息，返回空数组 []。
 只返回 JSON，不要其他内容。`;
 
   try {
