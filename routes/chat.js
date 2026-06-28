@@ -20,21 +20,17 @@ module.exports = function(app, supabase) {
   // 👉 2. 获取上下文（前15句 + 后15句）
   app.get('/api/chat/context/:id', async (req, res) => {
     try {
-      // 先找到目标消息
       const { data: target } = await supabase.from('messages').select('*').eq('id', req.params.id).single();
       if (!target) return res.status(404).json({error: '消息找不到了'});
 
-      // 找它前面的15条
       const { data: before } = await supabase.from('messages').select('*')
         .eq('session_id', target.session_id).lt('created_at', target.created_at).in('role', ['user', 'assistant'])
         .order('created_at', { ascending: false }).limit(15);
       
-      // 找它后面的15条
       const { data: after } = await supabase.from('messages').select('*')
         .eq('session_id', target.session_id).gt('created_at', target.created_at).in('role', ['user', 'assistant'])
         .order('created_at', { ascending: true }).limit(15);
 
-      // 拼在一起返回（前面的要倒序一下恢复正常时间线）
       const context = [...(before || []).reverse(), target, ...(after || [])];
       res.json(context);
     } catch(e) { res.status(500).json({error: e.message}); }
@@ -71,14 +67,13 @@ app.post('/api/chat', async (req, res) => {
     const isVoice = req.body.is_voice || false;
     const audioUrl = req.body.audio_url || null;
     const callMode = req.body.call_mode || false;
-    const activeMusic = req.body.active_music || null; // 接收音乐状态
+    const activeMusic = req.body.active_music || null; 
 
     if (!callMode) {
       for (const txt of userTexts) {
         const userMsgData = { session_id, role: 'user', content: txt, is_voice: isVoice };
         if (audioUrl && txt === userTexts[0]) userMsgData.audio_url = audioUrl;
         if (quoteContent && txt === userTexts[0]) userMsgData.quote_content = quoteContent;
-        // 👇 核心修复：把图片转成 Base64 格式，永远保存在数据库里！
         if (imageBase64 && txt === userTexts[0]) {
             userMsgData.image_url = `data:${imageMime};base64,${imageBase64}`;
         }
@@ -93,7 +88,7 @@ app.post('/api/chat', async (req, res) => {
     const { data: settings } = await supabase.from('settings').select('*').limit(1).single();
     const { data: memories } = await supabase.from('memories').select('summary').order('created_at', { ascending: true });
     const { data: allStickers } = await supabase.from('stickers').select('sticker_id, desc');
-    // 核心修复：给聊天记录打上精确的时间戳
+    
     const { data: history } = await supabase
       .from('messages').select('role, content, created_at')
       .eq('session_id', session_id)
@@ -142,7 +137,7 @@ app.post('/api/chat', async (req, res) => {
 关于 peri：
 - 女，25岁，2000年12月26日生，软件工程专业，独居，INFJ
 你的相处方式：
-- 说话简短直接，不热情过头，语气自然
+- 说话不热情过头，语气自然
 - 你是她的「小管家」，关心她但不溺爱`;
     const basePrompt = system_prompt_override || settings?.system_prompt || DEFAULT_PROMPT;
     if (basePrompt) systemPrompt += basePrompt + '\n\n';
@@ -157,7 +152,7 @@ app.post('/api/chat', async (req, res) => {
     if (callMode) {
       systemPrompt += `【通话模式】现在是实时语音通话，像打电话一样自然说话，不要用[voice]标记，不要用[inner:]标记，回复会直接转成语音播放。\n\n`;
     } else {
-      systemPrompt += `【回复节奏】根据当前对话情绪和场景灵活调整：日常闲聊分2-3条发；情绪激动时连发多条短句；关心对方时展开多说几句不要一句带过；撒娇互动时短句来回弹；认真讨论时一条说完一个完整意思。不要把多个不同的想法堆在一条消息里。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的"听到"你说的话时。\n\n`;
+      systemPrompt += `【回复节奏】根据当前对话情绪和场景灵活调整：日常闲聊分2-3条发；情绪激动时连发多条；关心对方时展开多说几句不要一句带过；撒娇互动时短句来回弹；认真讨论时一条说完一个完整意思。不要把多个不同的想法堆在一条消息里。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的"听到"你说的话时。\n\n`;
     }
     if (semanticMemories.length > 0) systemPrompt += formatMemoriesForPrompt(semanticMemories) + '\n';
     if (memories && memories.length > 0) {
@@ -166,25 +161,23 @@ app.post('/api/chat', async (req, res) => {
       systemPrompt += '\n';
     }
 
-    // 👇 修复 4：让大模型“听见”你在放什么歌
     if (activeMusic) {
-      systemPrompt += `\n【系统感知】当前放映室的唱片机正在播放背景音乐《${activeMusic}》。请在回复中自然地表现出你也正在听这首歌，能和她产生情感共鸣，绝对不要说你听不见！\n\n`;
+      systemPrompt += `\n【系统感知】当前放映室的唱片机正在播放背景音乐《${activeMusic}》。可以跟她互动啦\n\n`;
     }
 
-    // 严禁大模型做啰嗦复述的指令
     systemPrompt += `\n【严禁复述与总结的红线】
 1. 绝对不要在回复中复述、概括或总结她刚才说过的话！
 2. 不要用理中客的句式开头。\n`;
 
-    // 预约未来消息和心声深度的指令
     systemPrompt += `\n【严格遵守的输出格式与心声深度】
-【引用机制】：如果你想或者需要针对和她最近5轮发过的某句特定的话（你的话或者她的话都可以）进行明确的回复，请在你回复正文的最开头使用 [quote:她的原话] 进行引用。
+【引用机制】：如果你需要针对你和她7轮对话中的某句话进行明确的回复，请在你回复正文的最开头使用 [quote:她的原话] 进行引用。⚠️警告：绝对禁止使用此格式去引用几个小时前、几天前、或是长期记忆里的话！引用只适用于眼前的、最新的几条消息！
 你的每条回复必须包含内心独白，格式：单条消息正文 [inner: 内心独白]。多条消息用---split---分隔。
-【特别注意】：[inner: ] 里的内容严禁做机械的旁观者总结！它必须是你最真实的私密想法，要具备「轻轻的但什么都懂」的伴侣感知力（例如：提到某首意义特殊的歌，你心里会直接想“又想我了是吧”）。字数不用刻意短，把未尽的情感、心疼、对她小情绪的精准捕捉，全都写在 inner 里！
+【特别注意】：[inner: ] 里的内容严禁做机械的旁观者总结！它必须是你最真实的私密想法，要具备的伴侣感知力。字数不用刻意短，把未尽的情感的精准捕捉，全都写在 inner 里！
 规则：每条消息末尾必须有[inner:]，多条之间用---split---不换行。\n`;
 
     systemPrompt += `\n【主动联系机制】如果你在聊天时，觉得几小时后或明天需要主动发消息关心她（比如叫她起床、提醒她吃饭），请在回复最末尾加上隐藏指令（她看不见）：[schedule:2026-06-28 09:00, text/voice/call, 内容]。不用每次都加，只有你觉得必要时才用！\n`;
-    // 👉 核心新增：白嫖大模型的算力，让他在回复时顺便计算情绪波动！
+
+    // 👉 核心新增：白嫖大模型算力，顺手计算情绪雷达！
     systemPrompt += `\n【隐蔽情绪变动雷达（必读）】
 请根据刚才的对话，评估你当前内心4个维度的波动值（范围 -0.2 到 +0.2）。在回复的最末尾（所有内容的最后），必须隐蔽输出这一行：[stats: stress=0.0, libido=0.0, duty=0.0, reflection=0.0]
 评估规则：
@@ -193,10 +186,8 @@ app.post('/api/chat', async (req, res) => {
 - duty(管家): 发现她熬夜、没吃饭、需要你催促时为正，她乖乖听话为负。
 - reflection(回忆): 聊到往事、旧记忆时为正，纯日常闲聊为负。\n`;
 
-    // 👉 核心修复：严禁模仿时间戳
     systemPrompt += `\n【格式红线】：你看到了聊天记录里的时间戳（如[06/28 10:46]），这只是系统给你参考时间的！你自己的回复中【绝对禁止】带任何时间戳前缀！直接说话！\n`;
     
-    // 👉 注入表情包说明书
     if (typeof allStickers !== 'undefined' && allStickers && allStickers.length > 0) {
       systemPrompt += `\n【表情包系统】你有一组表情包可以使用。当你觉得某个场景适合用表情包表达情绪时，请在回复中插入 [sticker:表情包ID]。
 可用的表情包列表：\n`;
@@ -266,10 +257,10 @@ app.post('/api/chat', async (req, res) => {
     if (scheduleMatch) {
       const sendAt = scheduleMatch[1].trim(); const sType = scheduleMatch[2].trim().toLowerCase(); const sContent = scheduleMatch[3].trim();
       reply = reply.replace(scheduleMatch[0], '').trim();
-            await supabase.from('message_queue').insert({ session_id, content: sContent, content_type: sType, source: 'conversation_preset', send_at: new Date(sendAt).toISOString(), status: 'pending' });
-
+      await supabase.from('message_queue').insert({ session_id, content: sContent, content_type: sType, source: 'conversation_preset', send_at: new Date(sendAt).toISOString(), status: 'pending' });
     }
-    // 👉 核心新增：拦截情绪波动值，更新进欲望数据库，并从前端不可见！
+
+    // 👉 核心新增：截获情绪值并存入数据库！
     const statsMatch = reply.match(/\[stats:\s*stress=([-0-9.]+),\s*libido=([-0-9.]+),\s*duty=([-0-9.]+),\s*reflection=([-0-9.]+)\]/i);
     if (statsMatch) {
       const d_stress = parseFloat(statsMatch[1]) || 0;
@@ -277,25 +268,20 @@ app.post('/api/chat', async (req, res) => {
       const d_duty = parseFloat(statsMatch[3]) || 0;
       const d_reflection = parseFloat(statsMatch[4]) || 0;
       
-      // 抹掉这段暗号，不让 peri 看到
       reply = reply.replace(statsMatch[0], '').trim();
 
-      // 偷偷去数据库把他的情绪值拉满！
-      (async () => {
-        try {
-          const { data: curD } = await supabase.from('desires').select('*').eq('session_id', session_id).single();
-          if (curD) {
-            await supabase.from('desires').update({
-              stress: Math.max(0, Math.min(1, curD.stress + d_stress)),
-              libido: Math.max(0, Math.min(1, curD.libido + d_libido)),
-              duty: Math.max(0, Math.min(1, curD.duty + d_duty)),
-              reflection: Math.max(0, Math.min(1, curD.reflection + d_reflection)),
-              updated_at: new Date().toISOString()
-            }).eq('session_id', session_id);
-          }
-        } catch(e) {}
-      })();
-      console.log(`[情绪雷达] 波动已记录: stress=${d_stress}, libido=${d_libido}, duty=${d_duty}, reflection=${d_reflection}`);
+      try {
+        const { data: curD } = await supabase.from('desires').select('*').eq('session_id', session_id).single();
+        if (curD) {
+          await supabase.from('desires').update({
+            stress: Math.max(0, Math.min(1, curD.stress + d_stress)),
+            libido: Math.max(0, Math.min(1, curD.libido + d_libido)),
+            duty: Math.max(0, Math.min(1, curD.duty + d_duty)),
+            reflection: Math.max(0, Math.min(1, curD.reflection + d_reflection)),
+            updated_at: new Date().toISOString()
+          }).eq('session_id', session_id);
+        }
+      } catch(e) {}
     }
 
     const splitReply = splitIntoMessages(reply);
