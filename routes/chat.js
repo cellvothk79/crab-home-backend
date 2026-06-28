@@ -1,6 +1,44 @@
 const { searchMemories, extractAndStore, formatMemoriesForPrompt } = require('../services/memory');
 
 module.exports = function(app, supabase) {
+  // 👉 1. 搜索聊天记录
+  app.get('/api/chat/search', async (req, res) => {
+    const { session_id, q } = req.query;
+    if (!session_id || !q) return res.json([]);
+    try {
+      const { data } = await supabase
+        .from('messages').select('*')
+        .eq('session_id', session_id)
+        .ilike('content', `%${q}%`) // 模糊匹配关键字
+        .in('role', ['user', 'assistant'])
+        .order('created_at', { ascending: false })
+        .limit(30);
+      res.json(data || []);
+    } catch(e) { res.json([]); }
+  });
+
+  // 👉 2. 获取上下文（前15句 + 后15句）
+  app.get('/api/chat/context/:id', async (req, res) => {
+    try {
+      // 先找到目标消息
+      const { data: target } = await supabase.from('messages').select('*').eq('id', req.params.id).single();
+      if (!target) return res.status(404).json({error: '消息找不到了'});
+
+      // 找它前面的15条
+      const { data: before } = await supabase.from('messages').select('*')
+        .eq('session_id', target.session_id).lt('created_at', target.created_at).in('role', ['user', 'assistant'])
+        .order('created_at', { ascending: false }).limit(15);
+      
+      // 找它后面的15条
+      const { data: after } = await supabase.from('messages').select('*')
+        .eq('session_id', target.session_id).gt('created_at', target.created_at).in('role', ['user', 'assistant'])
+        .order('created_at', { ascending: true }).limit(15);
+
+      // 拼在一起返回（前面的要倒序一下恢复正常时间线）
+      const context = [...(before || []).reverse(), target, ...(after || [])];
+      res.json(context);
+    } catch(e) { res.status(500).json({error: e.message}); }
+  });
 
 app.post('/api/models', async (req, res) => {
   const { api_base, api_key } = req.body;
