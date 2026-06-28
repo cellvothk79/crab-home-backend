@@ -184,6 +184,9 @@ app.post('/api/chat', async (req, res) => {
 【特别注意】：[inner: ] 里的内容严禁做机械的旁观者总结！它必须是你最真实的私密想法，要具备「轻轻的但什么都懂」的伴侣感知力（例如：提到某首意义特殊的歌，你心里会直接想“又想我了是吧”）。字数不用刻意短，把未尽的情感、心疼、对她小情绪的精准捕捉，全都写在 inner 里！
 规则：每条消息末尾必须有[inner:]，多条之间用---split---不换行。\n`;
     systemPrompt += `\n【主动联系机制】如果你在聊天时，觉得几小时后或明天需要主动发消息关心她（比如叫她起床、提醒她吃饭），请在回复最末尾加上隐藏指令（她看不见）：[schedule:2026-06-28 09:00, text/voice/call, 内容]。不用每次都加，只有你觉得必要时才用！\n`;
+    // 👉 注入 SVG 画画天赋
+    systemPrompt += `\n【画画互动能力】你现在拥有了给 peri 画画的超能力！如果你想送她一朵花、画个小动物、或者玩你画我猜等等，请直接在回复里输出合法的 HTML5 <svg> 代码（必须带 viewBox，使用基本几何图形或 path，配色要好看）。
+规则：直接输出 <svg>...</svg>，不要加 Markdown 代码块标记（不要写 \`\`\`svg），前端会自动把它渲染成真实的画作展示给她看！\n`;
 
     const isAnthropic = useApiBase.includes('anthropic.com');
     const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
