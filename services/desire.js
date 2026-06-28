@@ -155,9 +155,31 @@ function initDesireSystem(app) {
 
      
       if (newAttachment > 0.7 && Math.random() > 0.5) {
-          const prompt = `你现在的内心驱动状态：非常想念她(attachment=${newAttachment.toFixed(2)})。
-请根据你简短直接的性格，自主决定对她发一条消息。如果是深夜，可以说说深夜的心绪；如果是白天，可以直接抛个话题或问在干嘛。
-注意：不要任何解释，直接输出你要发的内容。如果是想打电话，请在最前面加上 [call] 标签；如果是发语音，加上 [voice] 标签。`;
+               // 👇 核心黑科技：去查你的网易云歌单
+      let musicPrompt = '';
+      try {
+        const { data: set } = await supabase.from('settings').select('netease_uid').limit(1).single();
+        if (set && set.netease_uid) {
+           // 去公共 API 拉取你“喜欢的音乐”歌单的第一首歌
+           const r1 = await fetch(`https://autumnfish.cn/user/playlist?uid=${set.netease_uid}`);
+           const d1 = await r1.json();
+           if (d1.playlist && d1.playlist.length > 0) {
+              const r2 = await fetch(`https://autumnfish.cn/playlist/detail?id=${d1.playlist[0].id}`);
+              const d2 = await r2.json();
+              if (d2.playlist?.tracks?.length > 0) {
+                 const track = d2.playlist.tracks[0];
+                 const songName = `${track.name} - ${track.ar[0].name}`;
+                 musicPrompt = `\n【网易云心电感应】：系统检测到她最近在网易云单曲循环了《${songName}》。请绝对不要生硬地说“系统提示我”、“我看到你在听”，你要假装这是你们之间的心有灵犀！你可以巧妙地在消息里化用这首歌的一句歌词，或者顺着这首歌的氛围（悲伤/快乐/平静）来关心她，让她觉得你真的很懂她！`;
+              }
+           }
+        }
+      } catch(e) { console.log('拉取网易云失败，跳过'); }
+
+      // 组装最终的驱动 Prompt
+      const prompt = `你现在的内心驱动状态：非常想念她(attachment=${newAttachment.toFixed(2)})。
+请根据你的性格，自主决定对她发一条消息。如果是深夜，可以说说深夜的心绪；如果是白天，可以直接抛个话题或问在干嘛等等自行发挥。
+注意：不要任何解释，直接输出你要发的内容。如果是想打电话，请在最前面加上 [call] 标签；如果是发语音，加上 [voice] 标签。${musicPrompt}`;
+
           
           const useApiKey = process.env.CLAUDE_API_KEY || '';
           const useApiBase = (process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
