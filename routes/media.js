@@ -3,7 +3,7 @@ module.exports = function(app, supabase) {
   // 1. 获取所有书影音记录（前端拿到后自己分 Tab：进行中/已完结）
   app.get('/api/media/:sessionId', async (req, res) => {
     const { data, error } = await supabase
-      .from('media_records')跟你好
+      .from('media_records')
       .select('*')
       .eq('session_id', req.params.sessionId)
       .order('created_at', { ascending: false });
