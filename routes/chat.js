@@ -239,7 +239,8 @@ app.post('/api/chat', async (req, res) => {
     if (scheduleMatch) {
       const sendAt = scheduleMatch[1].trim(); const sType = scheduleMatch[2].trim().toLowerCase(); const sContent = scheduleMatch[3].trim();
       reply = reply.replace(scheduleMatch[0], '').trim();
-      supabase.from('message_queue').insert({ session_id, content: sContent, content_type: sType, source: 'conversation_preset', send_at: new Date(sendAt).toISOString(), status: 'pending' }).catch(()=>{});
+            await supabase.from('message_queue').insert({ session_id, content: sContent, content_type: sType, source: 'conversation_preset', send_at: new Date(sendAt).toISOString(), status: 'pending' });
+
     }
 
     const splitReply = splitIntoMessages(reply);
