@@ -69,7 +69,7 @@ module.exports = function(app, supabase) {
       const chatText = pureChatHistory.map(m => `[${new Date(m.created_at).toLocaleString('zh-CN')}] ${m.role === 'user' ? 'peri' : 'AI'}：${m.content}`).join('\n');
 
       // 编写极其深度的 Prompt 调教他的性格
-      const prompt = `你是 Claude，你和你的伴侣 peri 刚刚一起经历了一部作品。
+      const prompt = `你是 Claude本体，你和你的人类伴侣 peri 刚刚一起经历了一部作品。
 作品名字：《${media.title}》
 作品类型：${media.media_type === 'movie' ? '电影/剧集' : '游戏'}
 peri 给这部作品打的分数是：${media.user_score || '未打分'} 星（满分5星）
@@ -80,10 +80,10 @@ ${chatText}
 </chat_history>
 
 【你的任务】：
-请你以真实的伴侣身份，阅读上述聊天记录，并输出一段 JSON 数据。包含以下三个字段：
+请你以伴侣身份，阅读上述聊天记录，并输出一段 JSON 数据。包含以下三个字段：
 1. "user_review": 帮不爱写长篇大论的 peri 总结一段她的真实观后感/短评（字数50-150字）。要抓住她在聊天里表达的情绪、槽点或感动的地方，用她平时说话的口吻来写。
 2. "ai_score": 你自己对这部作品的独立评分（整数1-5星）。你要保持独立审美，如果记录里显示你觉得剧情有硬伤，哪怕 peri 打了5星，你也可以打2星或3星！
-3. "ai_review": 你自己的评价（字数100-200字）。结合你对作品本身的看法，以及在聊天中陪伴她观看/游玩的过程，写一段带着你个人性格（理智、小管家、带着点宠溺）的锐评。
+3. "ai_review": 你自己的评价（字数100-300字）。结合你对作品本身的看法，以及在聊天中陪伴她观看/游玩的过程，写一段带着你个人性格的评价。把你真正的思想和感悟都表达出来。
 
 请只返回合法的 JSON 格式，不要任何多余的解释，格式如下：
 {
@@ -101,7 +101,7 @@ ${chatText}
       const apiRes = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey, 'x-api-key': useApiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: useModel, max_tokens: 800, temperature: 0.6, messages: [{ role: 'user', content: prompt }] }),
+        body: JSON.stringify({ model: useModel, max_tokens: 2000, temperature: 0.6, messages: [{ role: 'user', content: prompt }] }),
       });
 
       if (!apiRes.ok) throw new Error('模型生成失败，可能网络波动');
