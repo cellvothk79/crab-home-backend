@@ -476,6 +476,8 @@ app.get('/api/mood/random', async (req, res) => {
     const shortPool = pool.filter(m => m.summary.length < 50);
     const finalPool = shortPool.length >= 3 ? shortPool : pool;
     const m = finalPool[Math.floor(Math.random() * finalPool.length)];
+    const cleanMood = m.summary.replace(/^.*?日.*?[:：]\d{2}[，,\s]*/, '').replace(/^[^，,]*[，,]\s*/, '');
+    res.json({ mood: cleanMood.slice(0, 40) });
     const cleanMood = m.summary.replace(/^(20\d{2}年)?\d{1,2}月\d{1,2}日[^，,\s]*[，,\s]+/, '');
     res.json({ mood: m.summary.slice(0, 40) });
   } catch(e) { 
