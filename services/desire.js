@@ -144,7 +144,12 @@ function initDesireSystem(app) {
       await supabase.from('desires').update({
         attachment: newAttachment, fatigue: newFatigue, updated_at: new Date().toISOString()
       }).eq('id', desire.id);
-
+      
+      await supabase.from('desire_history').insert({
+        session_id: sid, attachment: newAttachment, stress: desire.stress, 
+        libido: desire.libido, duty: desire.duty, reflection: desire.reflection, fatigue: newFatigue
+      }).catch(()=>{});
+      
       if (newFatigue > 0.8) return; 
       if (isNight && Math.random() > 0.2) return; 
 
