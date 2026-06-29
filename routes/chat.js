@@ -227,30 +227,58 @@ app.post('/api/chat', async (req, res) => {
     }
 
     let reply = '';
-    const apiPayload = {
-      model: useModel, max_tokens: settings?.max_reply_tokens || 4096, temperature: settings?.temperature || 0.7,
-      system: systemPrompt || undefined, messages: buildCleanMessages(true)
+    
+    // 👉 尝试组装带有 Prompt Caching (缓存命中) 的高级 Payload
+    let apiPayload = {
+      model: useModel, 
+      max_tokens: settings?.max_reply_tokens || 4096, 
+      temperature: settings?.temperature || 0.7,
+      // Anthropic 官方缓存格式：把 system 变成数组，并打上 ephemeral 标记
+      system: systemPrompt ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }] : undefined,
+      messages: buildCleanMessages(true)
     };
 
-    if (isAnthropic) {
-      const apiRes = await fetch(apiUrl, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': useApiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify(apiPayload),
-      });
-      if (!apiRes.ok) throw new Error((await apiRes.json().catch(() => ({}))).error?.message || `API ${apiRes.status}`);
-      reply = (await apiRes.json()).content?.map(b => b.text || '').join('') || '';
-    } else {
-      const apiRes = await fetch(apiUrl, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': useApiKey, 'Authorization': 'Bearer ' + useApiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify(apiPayload),
-      });
-      if (!apiRes.ok) throw new Error((await apiRes.json().catch(() => ({}))).error?.message || `API ${apiRes.status}`);
+    // 统一的 Headers
+    let fetchHeaders = {
+      'Content-Type': 'application/json',
+      'x-api-key': useApiKey,
+      'Authorization': 'Bearer ' + useApiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31' // 带上缓存 Beta 头
+    };
+
+    try {
+      // 🚀 第一次尝试：带有省钱指令的高级请求
+      let apiRes = await fetch(apiUrl, { method: 'POST', headers: fetchHeaders, body: JSON.stringify(apiPayload) });
+
+      // 🛡️ 容灾降级机制：如果中转站报错（不支持缓存），立刻剥离缓存参数，发起第二次常规请求！
+      if (!apiRes.ok && apiRes.status >= 400) {
+          console.log('⚠️ 中转站不支持 Prompt Caching，触发自动降级重试...');
+          
+          // 降级处理：把 system 变回普通字符串，去掉 beta 头
+          apiPayload.system = systemPrompt || undefined;
+          delete fetchHeaders['anthropic-beta'];
+          
+          // 再次发送
+          apiRes = await fetch(apiUrl, { method: 'POST', headers: fetchHeaders, body: JSON.stringify(apiPayload) });
+          
+          if (!apiRes.ok) {
+              const err = await apiRes.json().catch(() => ({}));
+              throw new Error(err.error?.message || `API ${apiRes.status}`);
+          }
+      }
+
+      // 解析成功的数据
       const data = await apiRes.json();
       if (data.content) reply = data.content.map(b => b.text || '').join('');
       else if (data.choices) reply = data.choices[0]?.message?.content || '';
+
+    } catch (apiError) {
+      throw apiError;
     }
 
     if (!reply) reply = '(空回复)';
+
 
     const threshold = settings?.compress_threshold || 40;
     if (history.length > threshold) compressMemory(session_id, settings).catch(err => console.error('记忆压缩失败:', err.message));
