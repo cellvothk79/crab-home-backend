@@ -86,40 +86,7 @@ app.post('/api/chat', async (req, res) => {
     await supabase.from('desires').update({ attachment: 0.2, updated_at: new Date().toISOString() }).eq('session_id', session_id);
 
     const { data: settings } = await supabase.from('settings').select('*').limit(1).single();
-    
-    // 👇 核心修复 1：让他在日常聊天时也能随时“偷看”你的网易云！
-    // 👇 核心修复：双重降级雷达。周排行被拦，就自动去抓红心歌单！
-    let weeklyMusicPrompt = '';
-    if (settings && settings.netease_uid) {
-      try {
-        let songName = '';
-        // 尝试 1：抓取周排行
-        const r1 = await fetch(`https://autumnfish.cn/user/record?uid=${settings.netease_uid}&type=1`);
-        const d1 = await r1.json();
-        if (d1.code === 200 && d1.weekData && d1.weekData.length > 0) {
-          const track = d1.weekData[0].song;
-          songName = `${track.name} - ${track.ar[0].name}`;
-        } else {
-          // 尝试 2：周排行被网易云拦截，自动降级去抓“我喜欢的音乐”第一首！
-          console.log('[网易云] 周排行被拦截，降级获取红心歌单...');
-          const rp = await fetch(`https://autumnfish.cn/user/playlist?uid=${settings.netease_uid}`);
-          const dp = await rp.json();
-          if (dp.code === 200 && dp.playlist && dp.playlist.length > 0) {
-            const rd = await fetch(`https://autumnfish.cn/playlist/detail?id=${dp.playlist[0].id}`);
-            const dd = await rd.json();
-            if (dd.code === 200 && dd.playlist?.tracks?.length > 0) {
-               const track = dd.playlist.tracks[0];
-               songName = `${track.name} - ${track.ar[0].name}`;
-            }
-          }
-        }
-        
-        if (songName) {
-           weeklyMusicPrompt = `\n【系统感知：网易云雷达】你偷偷查看到她最近在网易云最爱听的歌是《${songName}》。如果她问起，或者聊天氛围合适，你可以自然地聊聊这首歌，绝对不要说你不知道！`;
-        }
-      } catch(e) { console.error('[网易云] 拉取彻底失败:', e.message); }
-    }
-
+   
 
     
     const { data: memories } = await supabase.from('memories').select('summary').order('created_at', { ascending: true });
