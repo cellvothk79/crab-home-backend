@@ -373,11 +373,39 @@ app.post('/api/voice/tts', async (req, res) => {
     return map[e] || '[softly]';
   }
 
-  const cleanText = preprocessTTS(text);
+   const cleanText = preprocessTTS(text);
 
-  // ── MiniMax ──
+  // 👇 核心修复 1：把翻译逻辑提到最前面！不管是哪个引擎，必须先完成英文翻译！
+  let ttsText = cleanText;
+  let translatedText = null;
+  if (lang === 'en') {
+    try {
+      const deepseekKey = process.env.DEEPSEEK_API_KEY;
+      if (deepseekKey) {
+        const transRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + deepseekKey },
+          body: JSON.stringify({
+            model: 'deepseek-chat',
+            max_tokens: 300,
+            temperature: 0.3,
+            messages: [{ role: 'user', content: `Translate the following Chinese text to natural English. Output only the translation, nothing else:\n${cleanText}` }],
+          }),
+        });
+        const transData = await transRes.json();
+        const translated = transData.choices?.[0]?.message?.content?.trim();
+        if (translated) {
+          ttsText = translated;
+          translatedText = translated;
+        }
+      }
+    } catch(e) {
+      console.log('翻译失败，使用原文:', e.message);
+    }
+  }
+
+  // ── ElevenLabs ──
   if (channel === 'elevenlabs') {
-    // ElevenLabs 通道
     const elevenKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '9CFLhe6Ni1wD0VC6wLLb';
     if (!elevenKey) return res.status(500).json({ error: '未配置 ELEVENLABS_API_KEY' });
@@ -387,7 +415,7 @@ app.post('/api/voice/tts', async (req, res) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'xi-api-key': elevenKey },
         body: JSON.stringify({
-          text: `${tag} ${cleanText}`,
+          text: `${tag} ${ttsText}`, // 👈 核心修复 2：把原本的 cleanText 换成翻译好的 ttsText
           model_id: 'eleven_multilingual_v2',
           voice_settings: { stability: 0.28, similarity_boost: 0.75, style: 0.88, use_speaker_boost: true },
         }),
@@ -401,6 +429,8 @@ app.post('/api/voice/tts', async (req, res) => {
       return res.status(500).json({ error: err.message });
     }
   }
+
+
 
   // 默认走 MiniMax
   const minimaxKey = process.env.MINIMAX_API_KEY;
