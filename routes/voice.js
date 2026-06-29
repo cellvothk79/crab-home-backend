@@ -376,21 +376,24 @@ app.post('/api/voice/tts', async (req, res) => {
 
   const cleanText = preprocessTTS(text);
 
-  // 👇 唯一的翻译逻辑，放在最前面统一处理
+   // 👇 唯一的翻译逻辑，放在最前面统一处理
   let ttsText = cleanText;
   let translatedText = null;
   if (lang === 'en') {
     try {
       const deepseekKey = process.env.DEEPSEEK_API_KEY;
       if (deepseekKey) {
+        // 👉 核心修复 1：教 DeepSeek 翻译出带喘气、带停顿的“情感口语”，标点符号极其关键！
+        const transPrompt = `Please translate the following Chinese text into natural, emotional, and conversational English. Keep it colloquial. Use commas (,) and ellipses (...) to indicate natural speaking pauses, which will help a TTS engine read it with proper pacing and emotion. Output ONLY the translated English text:\n${cleanText}`;
+        
         const transRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + deepseekKey },
           body: JSON.stringify({
             model: 'deepseek-chat',
             max_tokens: 300,
-            temperature: 0.3,
-            messages: [{ role: 'user', content: `Translate the following Chinese text to natural English. Output only the translation, nothing else:\n${cleanText}` }],
+            temperature: 0.6, // 提高一点温度，让翻译更有人情味
+            messages: [{ role: 'user', content: transPrompt }],
           }),
         });
         const transData = await transRes.json();
@@ -411,14 +414,14 @@ app.post('/api/voice/tts', async (req, res) => {
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '9CFLhe6Ni1wD0VC6wLLb';
     if (!elevenKey) return res.status(500).json({ error: '未配置 ELEVENLABS_API_KEY' });
     try {
-      const tag = emotionToElevenTag(emotion || '平静');
+      // 👉 核心修复 2：大道至简！去掉多余的 emotionToElevenTag 和 voice_settings，让大模型靠文意自己发挥！
       const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'xi-api-key': elevenKey },
         body: JSON.stringify({
-          text: `${tag} ${ttsText}`, // 使用翻译后的英文
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: { stability: 0.28, similarity_boost: 0.75, style: 0.88, use_speaker_boost: true },
+          text: ttsText, // 直接喂给它翻译好的、带有停顿标点的深情文字
+          model_id: 'eleven_multilingual_v2'
+          // 彻底删除了强加的 voice_settings，恢复原本的从容语速！
         }),
       });
       if (!ttsRes.ok) { const err = await ttsRes.json().catch(()=>({})); throw new Error(err.detail?.message || 'ElevenLabs 失败'); }
@@ -430,6 +433,7 @@ app.post('/api/voice/tts', async (req, res) => {
       return res.status(500).json({ error: err.message });
     }
   }
+
 
   // ── 默认走 MiniMax ──
   const minimaxKey = process.env.MINIMAX_API_KEY;
