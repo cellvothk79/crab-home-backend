@@ -168,9 +168,6 @@ app.post('/api/chat', async (req, res) => {
       systemPrompt += `\n【系统感知】当前放映室的唱片机正在播放背景音乐《${activeMusic}》。可以跟她互动啦\n\n`;
     }
 
-    if (weeklyMusicPrompt) {
-      systemPrompt += weeklyMusicPrompt + '\n\n';
-    }
 
     systemPrompt += `\n【严禁复述与总结的红线】
 1. 绝对不要在回复中复述、概括或总结她刚才说过的话！
