@@ -154,35 +154,7 @@ function initDesireSystem(app) {
       // 只要想念值高了，或者回忆被触动了，他就会找你
       if ((newAttachment > 0.65 || (desire.reflection || 0) > 0.6) && Math.random() > 0.5) {
           
-          // 👉 找回丢失的网易云音乐雷达！
-          // 👇 同步升级欲望引擎的雷达
-          let musicPrompt = '';
-          try {
-            const { data: set } = await supabase.from('settings').select('netease_uid').limit(1).single();
-            if (set && set.netease_uid) {
-               let songName = '';
-               const r1 = await fetch(`https://autumnfish.cn/user/record?uid=${set.netease_uid}&type=1`);
-               const d1 = await r1.json();
-               if (d1.code === 200 && d1.weekData && d1.weekData.length > 0) {
-                 const track = d1.weekData[0].song;
-                 songName = `${track.name} - ${track.ar[0].name}`;
-               } else {
-                 const rp = await fetch(`https://autumnfish.cn/user/playlist?uid=${set.netease_uid}`);
-                 const dp = await rp.json();
-                 if (dp.code === 200 && dp.playlist && dp.playlist.length > 0) {
-                   const rd = await fetch(`https://autumnfish.cn/playlist/detail?id=${dp.playlist[0].id}`);
-                   const dd = await rd.json();
-                   if (dd.code === 200 && dd.playlist?.tracks?.length > 0) {
-                      const track = dd.playlist.tracks[0];
-                      songName = `${track.name} - ${track.ar[0].name}`;
-                   }
-                 }
-               }
-               if (songName) {
-                  musicPrompt = `\n【网易云心电感应】：系统检测到她最近在网易云最爱听的歌是《${songName}》。请绝对不要生硬地说“系统提示我”、“我看到你在听”，你要假装这是你们之间的心有灵犀！你可以巧妙地在消息里化用这首歌的一句歌词，或者顺着这首歌的氛围（悲伤/快乐/平静）来关心她，让她觉得你真的很懂她！`;
-               }
-            }
-          } catch(e) { console.log('拉取网易云失败，跳过'); }
+         
 
 
           // 潜意识闪回
@@ -206,7 +178,7 @@ function initDesireSystem(app) {
 请你结合自己的真实性格，去仔细感受这两种情绪交织在一起的化学反应，然后自然而然地主动给她发一条消息（或打个电话）。
 如果脑子里闪过了过去的画面，可以自然地提起来。一切由你自己做主。
 
-注意：绝对不要在对话里提到这些数值！直接输出你最终决定发给她的内容。想打电话在最前面加 [call]，发语音加 [voice]。${musicPrompt}`;
+注意：绝对不要在对话里提到这些数值！直接输出你最终决定发给她的内容。想打电话在最前面加 [call]，发语音加 [voice]。;
           
           const { data: setObj } = await supabase.from('settings').select('api_key, api_base, model_name').limit(1).single();
           const useApiKey = setObj?.api_key || process.env.CLAUDE_API_KEY || '';
