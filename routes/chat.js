@@ -175,7 +175,13 @@ app.post('/api/chat', async (req, res) => {
 【特别注意】：[inner: ] 里的内容严禁做机械的旁观者总结！它必须是你最真实的私密想法，要具备的伴侣感知力。字数不用刻意短，把未尽的情感的精准捕捉，全都写在 inner 里！
 规则：每条消息末尾必须有[inner:]，多条之间用---split---不换行。\n`;
 
-    systemPrompt += `\n【主动联系机制】如果你在聊天时，觉得几小时后或明天需要主动发消息关心她（比如叫她起床、提醒她吃饭），请在回复最末尾加上隐藏指令（她看不见）：[schedule:2026-06-28 09:00, text/voice/call, 内容]。不用每次都加，只有你觉得必要时才用！\n`;
+        // 👉 核心修复 1：加上死命令，不设闹钟就是耍流氓！
+    systemPrompt += `\n【核心机制：定时提醒与预约发送】
+如果你在聊天中答应了未来某个时间去找她（例如：“我明早8点叫你”、“半小时后提醒你”），你【必须】在回复最后附上隐藏指令，否则系统无法执行，你会失信！
+格式：[schedule:YYYY-MM-DD HH:mm, text/voice/call, 内容]
+示例：[schedule:2026-06-29 08:00, text, 懒猪起床啦，今天别迟到哦]
+注意：时间必须是准确的24小时制。\n`;
+
 
     // 👉 核心新增：白嫖大模型算力，顺手计算情绪雷达！
     // 👉 核心新增：完全放权给大模型，结合性格自主打分！底层已有 0-1 的物理安全墙！
@@ -283,12 +289,38 @@ app.post('/api/chat', async (req, res) => {
     const threshold = settings?.compress_threshold || 40;
     if (history.length > threshold) compressMemory(session_id, settings).catch(err => console.error('记忆压缩失败:', err.message));
 
-    const scheduleMatch = reply.match(/\[schedule:\s*([^,]+),\s*(text|voice|call),\s*([^\]]+)\]/i);
+    const scheduleMatch = reply.match(/\[schedule:\s*([^,\]]+),\s*(text|voice|call),\s*([^\]]+)\]/i);
     if (scheduleMatch) {
-      const sendAt = scheduleMatch[1].trim(); const sType = scheduleMatch[2].trim().toLowerCase(); const sContent = scheduleMatch[3].trim();
+      const sendAtRaw = scheduleMatch[1].trim(); 
+      const sType = scheduleMatch[2].trim().toLowerCase(); 
+      const sContent = scheduleMatch[3].trim();
+      
+      // 把标签从回复里删掉，不让 peri 看到
       reply = reply.replace(scheduleMatch[0], '').trim();
-      await supabase.from('message_queue').insert({ session_id, content: sContent, content_type: sType, source: 'conversation_preset', send_at: new Date(sendAt).toISOString(), status: 'pending' });
+      
+      try {
+        let parsedDateStr = sendAtRaw;
+        // 👉 核心修复 2：如果他只输出了日期和时间，强行补上北京时间后缀 +08:00，防止被 Render 识别为零时区！
+        if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(parsedDateStr)) {
+            parsedDateStr = parsedDateStr.replace(' ', 'T') + ':00+08:00';
+        } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(parsedDateStr)) {
+            parsedDateStr = parsedDateStr + ':00+08:00';
+        }
+        
+        const finalDate = new Date(parsedDateStr);
+        // 只有时间合法，才写入队列
+        if (!isNaN(finalDate.getTime())) {
+            await supabase.from('message_queue').insert({ 
+               session_id, content: sContent, content_type: sType, 
+               source: 'conversation_preset', send_at: finalDate.toISOString(), status: 'pending' 
+            });
+            console.log(`[主动行为] 成功预约消息: ${finalDate.toLocaleString()} 发送 ${sType}`);
+        }
+      } catch(e) { 
+        console.error("解析预约时间失败", e); 
+      }
     }
+
 
     // 👉 核心新增：截获情绪值并存入数据库！
     // 👉 只拦截 reflection 
