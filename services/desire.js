@@ -147,7 +147,7 @@ function initDesireSystem(app) {
       // 👉 心电图历史记录（稳稳地记下每一次跳动）
       await supabase.from('desire_history').insert({
         session_id: sid, attachment: newAttachment, reflection: desire.reflection || 0
-      }).catch(()=>{});
+      });
       
       if (isNight && Math.random() > 0.2) return; 
 
