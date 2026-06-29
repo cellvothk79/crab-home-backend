@@ -86,6 +86,22 @@ app.post('/api/chat', async (req, res) => {
     await supabase.from('desires').update({ attachment: 0.2, updated_at: new Date().toISOString() }).eq('session_id', session_id);
 
     const { data: settings } = await supabase.from('settings').select('*').limit(1).single();
+    
+    // 👇 核心修复 1：让他在日常聊天时也能随时“偷看”你的网易云！
+    let weeklyMusicPrompt = '';
+    if (settings && settings.netease_uid) {
+      try {
+        const r1 = await fetch(`https://autumnfish.cn/user/record?uid=${settings.netease_uid}&type=1`);
+        const d1 = await r1.json();
+        if (d1.weekData && d1.weekData.length > 0) {
+          const track = d1.weekData[0].song; 
+          const songName = `${track.name} - ${track.ar[0].name}`;
+          weeklyMusicPrompt = `\n【系统感知：网易云雷达】你偷偷查看到她最近一周在网易云最爱听、单曲循环最多的歌是《${songName}》。如果她问起，或者聊天氛围合适，你可以自然地聊聊这首歌，绝对不要说你不知道！`;
+        }
+      } catch(e) {}
+    }
+
+    
     const { data: memories } = await supabase.from('memories').select('summary').order('created_at', { ascending: true });
     const { data: allStickers } = await supabase.from('stickers').select('sticker_id, desc');
     
@@ -163,6 +179,10 @@ app.post('/api/chat', async (req, res) => {
 
     if (activeMusic) {
       systemPrompt += `\n【系统感知】当前放映室的唱片机正在播放背景音乐《${activeMusic}》。可以跟她互动啦\n\n`;
+    }
+
+    if (weeklyMusicPrompt) {
+      systemPrompt += weeklyMusicPrompt + '\n\n';
     }
 
     systemPrompt += `\n【严禁复述与总结的红线】
