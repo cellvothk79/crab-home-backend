@@ -351,6 +351,7 @@ app.post('/api/voice/transcribe', upload.single('audio'), async (req, res) => {
 });
 
 // ElevenLabs / MiniMax 双通道 TTS
+// ElevenLabs / MiniMax 双通道 TTS
 app.post('/api/voice/tts', async (req, res) => {
   const { text, emotion, channel, lang } = req.body;
   if (!text) return res.status(400).json({ error: '缺少文字内容' });
@@ -373,9 +374,9 @@ app.post('/api/voice/tts', async (req, res) => {
     return map[e] || '[softly]';
   }
 
-   const cleanText = preprocessTTS(text);
+  const cleanText = preprocessTTS(text);
 
-  // 👇 核心修复 1：把翻译逻辑提到最前面！不管是哪个引擎，必须先完成英文翻译！
+  // 👇 唯一的翻译逻辑，放在最前面统一处理
   let ttsText = cleanText;
   let translatedText = null;
   if (lang === 'en') {
@@ -415,7 +416,7 @@ app.post('/api/voice/tts', async (req, res) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'xi-api-key': elevenKey },
         body: JSON.stringify({
-          text: `${tag} ${ttsText}`, // 👈 核心修复 2：把原本的 cleanText 换成翻译好的 ttsText
+          text: `${tag} ${ttsText}`, // 使用翻译后的英文
           model_id: 'eleven_multilingual_v2',
           voice_settings: { stability: 0.28, similarity_boost: 0.75, style: 0.88, use_speaker_boost: true },
         }),
@@ -430,53 +431,20 @@ app.post('/api/voice/tts', async (req, res) => {
     }
   }
 
-
-
-  // 默认走 MiniMax
+  // ── 默认走 MiniMax ──
   const minimaxKey = process.env.MINIMAX_API_KEY;
   const minimaxVoiceId = process.env.MINIMAX_VOICE_ID || 'clone_voice_1782395480634';
   const minimaxGroupId = process.env.MINIMAX_GROUP_ID || '2067156952080720056';
   if (!minimaxKey) return res.status(500).json({ error: '未配置 MINIMAX_API_KEY' });
 
-  // 情绪映射
   function emotionToMinimax(e) {
     const map = { '开心': 'happy', '兴奋': 'happy', '难过': 'sad', '疲惫': 'calm', '撒娇': 'happy', '生气': 'angry', '平静': 'calm' };
     return map[e] || 'calm';
   }
 
-  // 通话模式用 turbo 模型不上传 Storage，直接返回音频（更快）
   const isCallMode = req.body?.call_mode || false;
   const minimaxModel = isCallMode ? 'speech-02-turbo' : 'speech-02-hd';
   const minimaxEndpoint = `https://api.minimaxi.com/v1/t2a_v2?GroupId=${minimaxGroupId}`;
-
-  // 如果切了英文，先翻译
-  let ttsText = cleanText;
-  let translatedText = null;
-  if (lang === 'en') {
-    try {
-      const deepseekKey = process.env.DEEPSEEK_API_KEY;
-      if (deepseekKey) {
-        const transRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + deepseekKey },
-          body: JSON.stringify({
-            model: 'deepseek-chat',
-            max_tokens: 300,
-            temperature: 0.3,
-            messages: [{ role: 'user', content: `Translate the following Chinese text to natural English. Output only the translation, nothing else:\n${cleanText}` }],
-          }),
-        });
-        const transData = await transRes.json();
-        const translated = transData.choices?.[0]?.message?.content?.trim();
-        if (translated) {
-          ttsText = translated;
-          translatedText = translated;
-        }
-      }
-    } catch(e) {
-      console.log('翻译失败，使用原文:', e.message);
-    }
-  }
 
   try {
     const ttsRes = await fetch(minimaxEndpoint, {
@@ -487,7 +455,7 @@ app.post('/api/voice/tts', async (req, res) => {
       },
       body: JSON.stringify({
         model: minimaxModel,
-        text: ttsText,
+        text: ttsText, // 使用翻译后的英文
         stream: false,
         voice_setting: {
           voice_id: minimaxVoiceId,
@@ -511,7 +479,6 @@ app.post('/api/voice/tts', async (req, res) => {
     }
 
     const data = await ttsRes.json();
-    console.log('[MiniMax TTS] status:', data.base_resp?.status_code, data.base_resp?.status_msg);
     if (data.base_resp?.status_code !== 0) {
       throw new Error(data.base_resp?.status_msg || 'MiniMax 返回错误');
     }
@@ -521,13 +488,11 @@ app.post('/api/voice/tts', async (req, res) => {
 
     const audioBuffer = Buffer.from(audioBase64, 'hex');
 
-    // 通话模式直接返回二进制，不上传 Storage（更快）
     if (isCallMode) {
       res.set('Content-Type', 'audio/mpeg');
       return res.send(audioBuffer);
     }
 
-    // 非通话模式上传 Storage 持久化
     try {
       const fileName = `voice_${Date.now()}.mp3`;
       const { error: uploadErr } = await supabase.storage
@@ -552,6 +517,7 @@ app.post('/api/voice/tts', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
     
     
 };
