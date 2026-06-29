@@ -413,16 +413,41 @@ app.post('/api/memory/extract-test', async (req, res) => {
 
 function splitIntoMessages(text) {
   if (!text) return [{content: text, inner: '', voice: false}];
-  const parts = text.split(/\s*---split---\s*/).map(p => p.trim()).filter(Boolean);
+  
+  // 👇 暴力清洗 1：不管模型多笨，强行洗掉它瞎编的时间戳前缀！
+  // 专门狙击 [06-28 10:30] 或 [10:30] 这种行首格式
+  let cleanText = text.replace(/^\[.*?\d{2}[:：]\d{2}.*?\]\s*/gm, '');
+  
+  // 👇 暴力清洗 2：降级防呆。如果笨模型没用 ---split---，我们就把空行强行当成切分符！
+  if (!cleanText.includes('---split---')) {
+      cleanText = cleanText.replace(/\n{2,}/g, ' ---split--- ');
+  }
+  
+  const parts = cleanText.split(/\s*---split---\s*/).map(p => p.trim()).filter(Boolean);
+  
   return parts.map(part => {
-    const isVoice = /^\[voice\]/i.test(part);
-    const partClean = isVoice ? part.replace(/^\[voice\]\s*/i, '').trim() : part;
-    const innerMatch = partClean.match(/\s*\[inner:\s*([\s\S]+?)\]\s*$/);
-    let inner = ''; let content = partClean;
-    if (innerMatch) { inner = innerMatch[1].trim(); content = partClean.slice(0, innerMatch.index).trim(); }
+    // 👇 暴力清洗 3：不管它把 [voice] 塞在开头、结尾还是中间，只要有，就触发，并抹除标签！
+    const isVoice = /\[voice\]/i.test(part);
+    let partClean = part.replace(/\[voice\]/gi, '').trim();
+
+    // 👇 暴力清洗 4：精准抠出内心独白，不管它有没有换行
+    const innerMatch = partClean.match(/\[inner:\s*([\s\S]+?)\]/i);
+    let inner = ''; 
+    let content = partClean;
+    
+    if (innerMatch) { 
+        inner = innerMatch[1].trim(); 
+        content = partClean.replace(innerMatch[0], '').trim(); // 把 [inner: xxx] 从气泡里抠干净
+    }
+    
+    // 清理掉气泡里难看的连续三个以上的空行
+    content = content.replace(/\n{3,}/g, '\n\n').trim();
+
     if (!content && inner) { content = partClean; inner = ''; }
+    
     return { content, inner, voice: isVoice };
-  });
+  }).filter(m => m.content || m.inner); // 过滤掉纯空气泡
 }
+
 
 };
