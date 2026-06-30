@@ -236,58 +236,81 @@ app.post('/api/chat', async (req, res) => {
       return finalMsgs;
     }
 
-    let reply = '';
-    
-    // 👉 尝试组装带有 Prompt Caching (缓存命中) 的高级 Payload
+       const finalMsgs = buildCleanMessages(true);
+
+    // 🧠 缓存黑科技断点 2：历史对话层
+    // 从后往前找，在倒数第 3 条 AI 消息上打缓存标记，把之前的陈年旧账全部“冻结”！
+    for (let i = finalMsgs.length - 3; i >= 0; i--) {
+        if (finalMsgs[i].role === 'assistant' && typeof finalMsgs[i].content === 'string') {
+            finalMsgs[i].content = [
+                { type: "text", text: finalMsgs[i].content, cache_control: { type: "ephemeral" } }
+            ];
+            break;
+        }
+    }
+
+    // 🧠 缓存黑科技断点 1：系统提示层
+    // 把长达几千字的人设、记忆库、网易云等 System Prompt 打上缓存标记！
+    let systemBlock = undefined;
+    if (systemPrompt) {
+        systemBlock = [
+            { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }
+        ];
+    }
+
     let apiPayload = {
       model: useModel, 
       max_tokens: settings?.max_reply_tokens || 4096, 
       temperature: settings?.temperature || 0.7,
-      // Anthropic 官方缓存格式：把 system 变成数组，并打上 ephemeral 标记
-      system: systemPrompt ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }] : undefined,
-      messages: buildCleanMessages(true)
+      system: systemBlock, 
+      messages: finalMsgs
     };
 
-    // 统一的 Headers
     let fetchHeaders = {
       'Content-Type': 'application/json',
       'x-api-key': useApiKey,
       'Authorization': 'Bearer ' + useApiKey,
       'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'prompt-caching-2024-07-31' // 带上缓存 Beta 头
+      'anthropic-beta': 'prompt-caching-2024-07-31' // 👈 必须带上这个激活缓存的通行证
     };
 
+    let reply = '';
+    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+
     try {
-      // 🚀 第一次尝试：带有省钱指令的高级请求
+      // 🚀 第 1 次尝试：带着“省钱指令”去叩门
       let apiRes = await fetch(apiUrl, { method: 'POST', headers: fetchHeaders, body: JSON.stringify(apiPayload) });
 
-      // 🛡️ 容灾降级机制：如果中转站报错（不支持缓存），立刻剥离缓存参数，发起第二次常规请求！
+      // 🛡️ 容灾降级：如果中转站不支持缓存参数报错（如 400 Bad Request）
       if (!apiRes.ok && apiRes.status >= 400) {
-          console.log('⚠️ 中转站不支持 Prompt Caching，触发自动降级重试...');
+          console.log('⚠️ API不支持 Prompt Caching 或触发拦截，0.1秒自动降级为普通请求...');
           
-          // 降级处理：把 system 变回普通字符串，去掉 beta 头
+          // 退回普通格式（扒掉缓存外衣）
           apiPayload.system = systemPrompt || undefined;
+          apiPayload.messages = apiPayload.messages.map(m => {
+              if (Array.isArray(m.content)) return { role: m.role, content: m.content.map(c => c.text || '').join('') };
+              return m;
+          });
           delete fetchHeaders['anthropic-beta'];
           
-          // 再次发送
           apiRes = await fetch(apiUrl, { method: 'POST', headers: fetchHeaders, body: JSON.stringify(apiPayload) });
-          
-          if (!apiRes.ok) {
-              const err = await apiRes.json().catch(() => ({}));
-              throw new Error(err.error?.message || `API ${apiRes.status}`);
-          }
       }
 
-      // 解析成功的数据
+      if (!apiRes.ok) {
+          const err = await apiRes.json().catch(() => ({}));
+          throw new Error(err.error?.message || `API ${apiRes.status}`);
+      }
+
       const data = await apiRes.json();
       if (data.content) reply = data.content.map(b => b.text || '').join('');
       else if (data.choices) reply = data.choices[0]?.message?.content || '';
 
-    } catch (apiError) {
-      throw apiError;
+    } catch (err) {
+      throw err;
     }
 
     if (!reply) reply = '(空回复)';
+
 
 
     const threshold = settings?.compress_threshold || 40;
