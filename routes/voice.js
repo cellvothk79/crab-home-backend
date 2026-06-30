@@ -148,9 +148,10 @@ app.post('/api/call/stream', async (req, res) => {
              method: 'POST', headers: { 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY },
              body: JSON.stringify({ 
                  text: ttsText, 
-                 model_id: 'eleven_multilingual_v2',
-                 // 👉 通话流式接口也必须加上黄金比例！
-                 voice_settings: { stability: 0.45, similarity_boost: 0.75, style: 0.30, use_speaker_boost: true }
+                 model_id: 'eleven_v3',
+                 language_code: 'zh',
+                 // 👉 v3 黄金参数：低稳定性=更有表演感，高风格=情感更强
+                 voice_settings: { stability: 0.28, similarity_boost: 0.75, style: 0.88, use_speaker_boost: true, speed: 1.10 }
              })
            });
            if (elRes.ok) {
@@ -344,10 +345,13 @@ app.post('/api/voice/tts', async (req, res) => {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'xi-api-key': elevenKey },
         body: JSON.stringify({ 
             text: ttsText, 
-            model_id: 'eleven_multilingual_v2',
-            // 👉 核心修复 2：恢复“黄金情感比例”！
-            // stability: 0.45 允许它有真实的情感破音和叹息；style: 0.3 增加感染力但不至于失控！
-            voice_settings: { stability: 0.45, similarity_boost: 0.75, style: 0.30, use_speaker_boost: true }
+            model_id: 'eleven_v3',
+            language_code: 'zh',
+            // 👉 v3 黄金参数（来自攻略）：
+            // stability 0.28 = 更有表演感，允许气息破音叹息
+            // style 0.88 = 情感表现力拉满但不失控
+            // speed 1.10 = 略快，更像口语节奏
+            voice_settings: { stability: 0.28, similarity_boost: 0.75, style: 0.88, use_speaker_boost: true, speed: 1.10 }
         }),
       });
       if (!ttsRes.ok) throw new Error('ElevenLabs 失败');
