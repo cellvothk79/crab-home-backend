@@ -275,7 +275,6 @@ app.post('/api/chat', async (req, res) => {
     };
 
     let reply = '';
-    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
 
     try {
       // 🚀 第 1 次尝试：带着“省钱指令”去叩门
