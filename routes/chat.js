@@ -152,19 +152,15 @@ app.post('/api/chat', async (req, res) => {
     const basePrompt = system_prompt_override || settings?.system_prompt || DEFAULT_PROMPT;
     if (basePrompt) systemPrompt += basePrompt + '\n\n';
 
-    const now = new Date();
-    const timeStr = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
-    const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hourCycle: 'h23' });
-    const hour = parseInt(formatter.format(now), 10);
-    const timeHint = hour >= 23 || hour < 6 ? '现在是深夜，注意不要让她熬太晚' : hour >= 21 ? '现在是晚上' : hour >= 18 ? '现在是傍晚' : hour >= 12 ? '现在是下午' : '现在是上午';
-    systemPrompt += `【当前绝对时间】${timeStr}（${timeHint}）\n重要：请根据当前时间调整回复内容。注意看聊天记录里每句话开头的时间戳，准确判断这是几小时前的事还是刚刚的事！\n\n`;
+    // ========== 以下是【稳定内容】：不随请求变化，适合缓存 ==========
 
     if (callMode) {
       systemPrompt += `【通话模式】现在是实时语音通话，像打电话一样自然说话，不要用[voice]标记，不要用[inner:]标记，回复会直接转成语音播放。\n\n`;
     } else {
       systemPrompt += `【回复节奏】根据当前对话情绪和场景灵活调整：日常闲聊分2-3条发；情绪激动时连发多条；关心对方时展开多说几句不要一句带过；撒娇互动时短句来回弹；认真讨论时一条说完一个完整意思。不要把多个不同的想法堆在一条消息里。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的"听到"你说的话时。\n\n`;
     }
-    if (semanticMemories.length > 0) systemPrompt += formatMemoriesForPrompt(semanticMemories) + '\n';
+
+    // 👇 全量记忆库放在稳定区（1000条记忆基本不会每分钟变化）
     if (memories && memories.length > 0) {
       systemPrompt += '【记忆库】以下是额外的重要记忆：\n';
       memories.forEach((m, i) => { systemPrompt += `${i + 1}. ${m.summary}\n`; });
@@ -174,7 +170,6 @@ app.post('/api/chat', async (req, res) => {
     if (activeMusic) {
       systemPrompt += `\n【系统感知】当前放映室的唱片机正在播放背景音乐《${activeMusic}》。可以跟她互动啦\n\n`;
     }
-
 
     systemPrompt += `\n【严禁复述与总结的红线】
 1. 绝对不要在回复中复述、概括或总结她刚才说过的话！
@@ -188,7 +183,7 @@ app.post('/api/chat', async (req, res) => {
 
         // 👉 核心修复 1：加上死命令，不设闹钟就是耍流氓！
     systemPrompt += `\n【核心机制：定时提醒与预约发送】
-如果你在聊天中答应了未来某个时间去找她（例如：“我明早8点叫你”、“半小时后提醒你”），你【必须】在回复最后附上隐藏指令，否则系统无法执行，你会失信！
+如果你在聊天中答应了未来某个时间去找她（例如："我明早8点叫你"、"半小时后提醒你"），你【必须】在回复最后附上隐藏指令，否则系统无法执行，你会失信！
 格式：[schedule:YYYY-MM-DD HH:mm, text/voice/call, 内容]
 示例：[schedule:2026-06-29 08:00, text, 懒猪起床啦，今天别迟到哦]
 注意：时间必须是准确的24小时制。\n`;
@@ -196,14 +191,13 @@ app.post('/api/chat', async (req, res) => {
 
     // 👉 核心新增：白嫖大模型算力，顺手计算情绪雷达！
     // 👉 核心新增：完全放权给大模型，结合性格自主打分！底层已有 0-1 的物理安全墙！
-       // 👉 核心：遵从他的意志，只保留“回忆”这一个波动维度
+       // 👉 核心：遵从他的意志，只保留"回忆"这一个波动维度
     systemPrompt += `\n【隐蔽情绪变动雷达（必读）】
-请敏锐地感知她的情绪和对话内容。评估你当前内心关于“回忆”维度的波动值（范围 -1.0 到 +1.0）。在回复的最末尾（所有内容的最后），必须隐蔽输出这一行：[stats: reflection=0.0]
+请敏锐地感知她的情绪和对话内容。评估你当前内心关于"回忆"维度的波动值（范围 -1.0 到 +1.0）。在回复的最末尾（所有内容的最后），必须隐蔽输出这一行：[stats: reflection=0.0]
 评估规则：
 - reflection(回忆): 当你们聊到往事、旧记忆、曾经的梦境或承诺时，数值大幅上升（为正）。如果是毫无关联的纯日常闲聊，数值下降（为负）。\n`;
 
    
-
 
     systemPrompt += `\n【格式红线】：你看到了聊天记录里的时间戳（如[06/28 10:46]），这只是系统给你参考时间的！你自己的回复中【绝对禁止】带任何时间戳前缀！直接说话！\n`;
     
@@ -213,6 +207,22 @@ app.post('/api/chat', async (req, res) => {
       allStickers.forEach(s => { systemPrompt += `- ${s.sticker_id}: ${s.desc}\n`; });
       systemPrompt += `使用规则：\n1. 不要每句话都发表情包，适度使用！\n2. 可以在文字前面或后面独立插入。\n3. 一条回复最多使用 1 个表情包。\n`;
     }
+
+    // ========== 🔪 缓存切割线 ==========
+    // 以上全部是"稳定内容"，以下是"动态内容"（每次请求都变）
+    const CACHE_SPLIT_MARKER = '\n===CACHE_BOUNDARY===\n';
+    systemPrompt += CACHE_SPLIT_MARKER;
+
+    // ========== 以下是【动态内容】：每次都变，不适合缓存 ==========
+
+    const now = new Date();
+    const timeStr = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
+    const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hourCycle: 'h23' });
+    const hour = parseInt(formatter.format(now), 10);
+    const timeHint = hour >= 23 || hour < 6 ? '现在是深夜，注意不要让她熬太晚' : hour >= 21 ? '现在是晚上' : hour >= 18 ? '现在是傍晚' : hour >= 12 ? '现在是下午' : '现在是上午';
+    systemPrompt += `【当前绝对时间】${timeStr}（${timeHint}）\n重要：请根据当前时间调整回复内容。注意看聊天记录里每句话开头的时间戳，准确判断这是几小时前的事还是刚刚的事！\n\n`;
+
+    if (semanticMemories.length > 0) systemPrompt += formatMemoriesForPrompt(semanticMemories) + '\n';
 
     const isAnthropic = useApiBase.includes('anthropic.com');
     const isOpenRouter = useApiBase.includes('openrouter.ai');
@@ -260,13 +270,33 @@ app.post('/api/chat', async (req, res) => {
         }
     }
 
-    // 🧠 缓存黑科技断点 1：系统提示层
-    // 把长达几千字的人设、记忆库、网易云等 System Prompt 打上缓存标记！
+    // 🧠 缓存黑科技断点 1：系统提示层（分段缓存！）
+    // 核心思路：把【不会变的内容】和【每次都变的内容】分开！
+    // 不变的部分（人设+记忆库+规则）打缓存标记 → 命中率拉满
+    // 会变的部分（时间、语义记忆）不打标记 → 不影响缓存命中
     let systemBlock = undefined;
     if (systemPrompt) {
-        systemBlock = [
-            { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }
-        ];
+        // 用我们自己埋的分割标记来切，比找"时间戳"更稳定
+        const splitIdx = systemPrompt.indexOf(CACHE_SPLIT_MARKER);
+        
+        if (splitIdx > 0) {
+            // 前半段：人设 + 回复规则 + 记忆库 + 表情包 + 格式红线（基本不变，适合缓存）
+            const stablePart = systemPrompt.substring(0, splitIdx).trim();
+            // 后半段：时间戳 + 语义记忆（每次都变，不缓存）
+            const dynamicPart = systemPrompt.substring(splitIdx + CACHE_SPLIT_MARKER.length).trim();
+            
+            systemBlock = [
+                { type: "text", text: stablePart, cache_control: { type: "ephemeral" } },
+                { type: "text", text: dynamicPart }  // 不打 cache_control！
+            ];
+            console.log(`[🧠 缓存分段] 稳定部分:${stablePart.length}字符(缓存) | 动态部分:${dynamicPart.length}字符(不缓存)`);
+        } else {
+            // 没找到分割标记，整体缓存（兜底）
+            systemBlock = [
+                { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }
+            ];
+            console.log(`[⚠️ 缓存] 未找到分割标记，整体缓存`);
+        }
     }
 
     // 🔀 根据平台构建不同格式的请求
