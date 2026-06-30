@@ -312,10 +312,11 @@ app.post('/api/voice/tts', async (req, res) => {
     try {
       const deepseekKey = process.env.DEEPSEEK_API_KEY;
       if (deepseekKey) {
-        const transPrompt = `Please translate the following Chinese text into natural, emotional, and conversational English. Keep it colloquial. Use commas (,) and ellipses (...) to indicate natural speaking pauses, which will help a TTS engine read it with proper pacing and emotion. Output ONLY the translated English text:\n${cleanText}`;
+        // 👉 核心修复 1：把你的情绪告诉翻译官！让翻译出来的英文本身就带有大起大落的情感！
+        const transPrompt = `Please translate the following Chinese text into natural, emotional, and conversational English. The underlying emotion of this sentence is [${emotion || 'calm'}]. Keep it colloquial, matching this emotion. Use commas (,) and ellipses (...) to indicate natural speaking pauses. Output ONLY the translated English text:\n${cleanText}`;
         const transRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + deepseekKey },
-          body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 300, temperature: 0.6, messages: [{ role: 'user', content: transPrompt }] }),
+          body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 300, temperature: 0.7, messages: [{ role: 'user', content: transPrompt }] }),
         });
         const transData = await transRes.json();
         const translated = transData.choices?.[0]?.message?.content?.trim();
@@ -335,7 +336,13 @@ app.post('/api/voice/tts', async (req, res) => {
     try {
       const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'xi-api-key': elevenKey },
-        body: JSON.stringify({ text: ttsText, model_id: 'eleven_multilingual_v2' }),
+        body: JSON.stringify({ 
+            text: ttsText, 
+            model_id: 'eleven_multilingual_v2',
+            // 👉 核心修复 2：恢复“黄金情感比例”！
+            // stability: 0.45 允许它有真实的情感破音和叹息；style: 0.3 增加感染力但不至于失控！
+            voice_settings: { stability: 0.45, similarity_boost: 0.75, style: 0.30, use_speaker_boost: true }
+        }),
       });
       if (!ttsRes.ok) throw new Error('ElevenLabs 失败');
       const buf = await ttsRes.arrayBuffer();
@@ -343,6 +350,7 @@ app.post('/api/voice/tts', async (req, res) => {
       return res.send(Buffer.from(buf));
     } catch(err) { return res.status(500).json({ error: err.message }); }
   }
+
 
   // ── MiniMax ──
   const minimaxKey = process.env.MINIMAX_API_KEY;
