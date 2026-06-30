@@ -323,9 +323,9 @@ app.post('/api/chat', async (req, res) => {
       // 🚀 第 1 次尝试：带着“省钱指令”去叩门
       let apiRes = await fetch(apiUrl, { method: 'POST', headers: fetchHeaders, body: JSON.stringify(apiPayload) });
 
-      // 🛡️ 容灾降级：如果中转站不支持缓存参数报错（如 400 Bad Request）
-      if (!apiRes.ok && apiRes.status >= 400) {
-          console.log('⚠️ API不支持 Prompt Caching 或触发拦截，0.1秒自动降级为普通请求...');
+      // 🛡️ 容灾降级：仅对 Anthropic 官方/中转站生效，OpenRouter 不需要降级
+      if (!isOpenRouter && !apiRes.ok && apiRes.status >= 400) {
+          console.log('⚠️ API不支持 Prompt Caching 或触发拦截，自动降级为普通请求...');
           
           // 退回普通格式（扒掉缓存外衣）
           apiPayload.system = systemPrompt || undefined;
@@ -339,8 +339,9 @@ app.post('/api/chat', async (req, res) => {
       }
 
       if (!apiRes.ok) {
-          const err = await apiRes.json().catch(() => ({}));
-          throw new Error(err.error?.message || `API ${apiRes.status}`);
+          const errBody = await apiRes.json().catch(() => ({}));
+          console.error(`[❌ API错误] 状态码:${apiRes.status} | 完整返回:`, JSON.stringify(errBody));
+          throw new Error(errBody.error?.message || `API ${apiRes.status}`);
       }
 
       const data = await apiRes.json();
