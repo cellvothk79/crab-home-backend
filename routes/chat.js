@@ -215,7 +215,11 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const isAnthropic = useApiBase.includes('anthropic.com');
-    const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+    const isOpenRouter = useApiBase.includes('openrouter.ai');
+    // OpenRouter 走 OpenAI 兼容格式 /chat/completions，Anthropic 走 /messages
+    const apiUrl = isOpenRouter
+      ? useApiBase.replace(/\/+$/, '') + (useApiBase.includes('/api/v1') ? '/chat/completions' : '/api/v1/chat/completions')
+      : (useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages');
 
     function buildCleanMessages(withImage) {
       let msgs = recentMessages.filter(m => m.role === 'user' || m.role === 'assistant').filter(m => m.content && m.content.trim());
@@ -265,21 +269,53 @@ app.post('/api/chat', async (req, res) => {
         ];
     }
 
-    let apiPayload = {
-      model: useModel, 
-      max_tokens: settings?.max_reply_tokens || 4096, 
-      temperature: settings?.temperature || 0.7,
-      system: systemBlock, 
-      messages: finalMsgs
-    };
+    // 🔀 根据平台构建不同格式的请求
+    let apiPayload, fetchHeaders;
 
-    let fetchHeaders = {
-      'Content-Type': 'application/json',
-      'x-api-key': useApiKey,
-      'Authorization': 'Bearer ' + useApiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'prompt-caching-2024-07-31' // 👈 必须带上这个激活缓存的通行证
-    };
+    if (isOpenRouter) {
+      // ===== OpenRouter：走 OpenAI 兼容格式 =====
+      // 把 system prompt 塞进 messages 数组的第一条
+      const orMessages = [];
+      if (systemPrompt) orMessages.push({ role: 'system', content: systemPrompt });
+      // OpenRouter 不支持 Anthropic 的 cache_control 数组格式，需要展平
+      for (const m of finalMsgs) {
+        if (Array.isArray(m.content)) {
+          // 展平：把 [{type:"text", text:"...", cache_control:...}] 变回纯字符串
+          const flatText = m.content.map(c => c.text || '').join('');
+          orMessages.push({ role: m.role, content: flatText });
+        } else {
+          orMessages.push({ role: m.role, content: m.content });
+        }
+      }
+      apiPayload = {
+        model: useModel,
+        max_tokens: settings?.max_reply_tokens || 4096,
+        temperature: settings?.temperature || 0.7,
+        messages: orMessages
+      };
+      fetchHeaders = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + useApiKey,
+        'HTTP-Referer': 'https://peri-chat.onrender.com',
+        'X-Title': 'Peri Chat'
+      };
+    } else {
+      // ===== Anthropic 官方：走原生 Messages API =====
+      apiPayload = {
+        model: useModel, 
+        max_tokens: settings?.max_reply_tokens || 4096, 
+        temperature: settings?.temperature || 0.7,
+        system: systemBlock, 
+        messages: finalMsgs
+      };
+      fetchHeaders = {
+        'Content-Type': 'application/json',
+        'x-api-key': useApiKey,
+        'Authorization': 'Bearer ' + useApiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31' // 👈 激活缓存的通行证
+      };
+    }
 
     let reply = '';
 
