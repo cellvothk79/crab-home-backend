@@ -146,13 +146,19 @@ app.post('/api/call/stream', async (req, res) => {
         if (tts_channel === 'elevenlabs' && process.env.ELEVENLABS_API_KEY) {
            const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID||'9CFLhe6Ni1wD0VC6wLLb'}`, {
              method: 'POST', headers: { 'Content-Type': 'application/json', 'xi-api-key': process.env.ELEVENLABS_API_KEY },
-             body: JSON.stringify({ text: ttsText, model_id: 'eleven_multilingual_v2' })
+             body: JSON.stringify({ 
+                 text: ttsText, 
+                 model_id: 'eleven_multilingual_v2',
+                 // 👉 通话流式接口也必须加上黄金比例！
+                 voice_settings: { stability: 0.45, similarity_boost: 0.75, style: 0.30, use_speaker_boost: true }
+             })
            });
            if (elRes.ok) {
              const buf = await elRes.arrayBuffer();
              send({ type: 'audio', audio: Buffer.from(buf).toString('base64'), idx: sentenceIdx, format: 'mp3' });
            }
-        } else if (process.env.MINIMAX_API_KEY) {
+        }
+       else if (process.env.MINIMAX_API_KEY) {
           const ttsRes = await fetch(`https://api.minimaxi.com/v1/t2a_v2?GroupId=${process.env.MINIMAX_GROUP_ID||'2067156952080720056'}`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.MINIMAX_API_KEY },
             body: JSON.stringify({
