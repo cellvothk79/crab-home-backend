@@ -348,6 +348,26 @@ app.post('/api/chat', async (req, res) => {
       if (data.content) reply = data.content.map(b => b.text || '').join('');
       else if (data.choices) reply = data.choices[0]?.message?.content || '';
 
+      // 💰 缓存命中追踪器：在 Render 日志里看省钱效果！
+      if (data.usage) {
+        const u = data.usage;
+        const normalInput = u.input_tokens || 0;
+        const cacheWrite = u.cache_creation_input_tokens || 0;
+        const cacheHit = u.cache_read_input_tokens || 0;
+        const output = u.output_tokens || 0;
+        const totalInput = normalInput + cacheWrite + cacheHit;
+
+        // 缓存命中率计算
+        const hitRate = totalInput > 0 ? ((cacheHit / totalInput) * 100).toFixed(1) : '0.0';
+
+        // 省钱计算（Sonnet 输入价 $3/M，缓存读取 $0.3/M，省了 90%）
+        const savedTokens = cacheHit; // 这些 token 只花了 1/10 的钱
+        const savedMoney = (savedTokens * (3 - 0.3) / 1000000).toFixed(4); // 每百万 token 省 $2.7
+
+        console.log(`[💰 账单] 输入:${normalInput} | 写缓存:${cacheWrite} | ✅命中缓存:${cacheHit} | 输出:${output}`);
+        console.log(`[📊 缓存] 命中率:${hitRate}% | 本次省了约 $${savedMoney} | ${cacheHit > 0 ? '🎉 缓存生效中！' : '⏳ 首次写入，下条消息开始省钱'}`);
+      }
+
     } catch (err) {
       throw err;
     }
