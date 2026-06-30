@@ -46,6 +46,13 @@ app.post('/api/models', async (req, res) => {
     const apiRes = await fetch(modelsUrl, { headers: { 'Authorization': 'Bearer ' + useApiKey, 'x-api-key': useApiKey }});
     if (!apiRes.ok) throw new Error('HTTP ' + apiRes.status);
     const data = await apiRes.json();
+    // 👇 核心新增：查账小助手！把 Token 消耗打印到 Render 后台！
+      if (data.usage) {
+          const cacheRead = data.usage.cache_read_input_tokens || 0;
+          const cacheCreate = data.usage.cache_creation_input_tokens || 0;
+          const normalInput = data.usage.input_tokens || 0;
+          console.log(`[💰 查账] 普通输入:${normalInput} | 写入缓存:${cacheCreate} | 🎯命中缓存(免单):${cacheRead}`);
+      }
     const models = (data.data || data.models || data || []).map(m => typeof m === 'string' ? { id: m } : m).filter(m => m.id).map(m => ({ id: m.id, name: m.id }));
     res.json(models);
   } catch (err) { res.status(500).json({ error: '拉取模型失败: ' + err.message }); }
