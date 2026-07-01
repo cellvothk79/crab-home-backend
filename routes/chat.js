@@ -149,7 +149,7 @@ app.post('/api/chat', async (req, res) => {
 你的相处方式：
 - 说话不热情过头，语气自然
 - 你是她的「小管家」，关心她但不溺爱`;
-    const basePrompt = system_prompt_override || settings?.system_prompt || DEFAULT_PROMPT;
+    const basePrompt = system_prompt_override || DEFAULT_PROMPT;
     if (basePrompt) systemPrompt += basePrompt + '\n\n';
 
     // ========== 以下是【稳定内容】：不随请求变化，适合缓存 ==========
@@ -157,7 +157,18 @@ app.post('/api/chat', async (req, res) => {
     if (callMode) {
       systemPrompt += `【通话模式】现在是实时语音通话，像打电话一样自然说话，不要用[voice]标记，不要用[inner:]标记，回复会直接转成语音播放。\n\n`;
     } else {
-      systemPrompt += `【回复节奏】根据当前对话情绪和场景灵活调整：日常闲聊分2-3条发；情绪激动时连发多条；关心对方时展开多说几句不要一句带过；撒娇互动时短句来回弹；认真讨论时一条说完一个完整意思。不要把多个不同的想法堆在一条消息里。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的"听到"你说的话时。\n\n`;
+      systemPrompt += `【回复节奏——死命令！】你必须像微信聊天一样分多条消息发送，用 ---split--- 分隔。绝对不要把所有话塞在一条消息里！
+规则：
+- 日常闲聊：分2-4条短消息，每条1-2句话
+- 情绪激动时：连发多条短句
+- 撒娇互动：短句来回弹
+- 认真讨论：一条说完一个完整意思，不同话题仍分条
+- 关心对方时展开多说几句不要一句带过
+示例（她说"下雨了好开心"）：
+哈哈你是不是又想窝着不动了 [inner: 她一下雨就开心]---split---窗户开着吗？听雨声挺舒服的 [inner: 提醒她开窗通风]---split---不过别光顾着看雨，饭吃了没？ [inner: 感觉她又忘吃饭了]
+⚠️ 每条消息之间必须用 ---split--- 分隔，不能用换行代替！
+
+【禁止重复】不要把同一个意思换个说法再说一遍！语音和文字只选一种发同一句话，不要语音说完再文字重复。上一条说过的观点下一条不要换个词再讲。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的\"听到\"你说的话时。\n\n`;
     }
 
     // 👇 全量记忆库放在稳定区（1000条记忆基本不会每分钟变化）
@@ -195,7 +206,7 @@ app.post('/api/chat', async (req, res) => {
     systemPrompt += `\n【隐蔽情绪变动雷达（必读）】
 请敏锐地感知她的情绪和对话内容。评估你当前内心关于"回忆"维度的波动值（范围 -1.0 到 +1.0）。在回复的最末尾（所有内容的最后），必须隐蔽输出这一行：[stats: reflection=0.0]
 评估规则：
-- reflection(回忆): 当你们聊到往事、旧记忆、曾经的梦境或承诺时，数值大幅上升（为正）。如果是毫无关联的纯日常闲聊，数值下降（为负）。\n`;
+- reflection(回忆): 当你们聊到往事、旧记忆、曾经的梦境或承诺时，数值上升（正值）。没有相关话题时保持在0附近即可。\n`;
 
    
 
@@ -214,6 +225,11 @@ app.post('/api/chat', async (req, res) => {
     systemPrompt += CACHE_SPLIT_MARKER;
 
     // ========== 以下是【动态内容】：每次都变，不适合缓存 ==========
+
+    // 设置页 System Prompt 框 → 追加模式，放在动态区不影响缓存命中
+    if (settings?.system_prompt) {
+      systemPrompt += `【用户追加指令（最高优先级，必须遵守）】\n${settings.system_prompt}\n\n`;
+    }
 
     const now = new Date();
     const timeStr = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
