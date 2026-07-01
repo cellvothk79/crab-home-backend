@@ -302,7 +302,7 @@ async function generateDiary(session_id, apiKey, apiBase, model) {
 对话内容：
 ${convoSummary}
 
-现在写今天的日记。
+现在写今天的日记（150字以内）。
 
 【风格要求】：
 1. 像真人随手写的日记，口语化、松弛、不用刻意升华。可以吐槽、可以记流水账、可以就写"今天没什么特别的"。
@@ -415,7 +415,7 @@ async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
 peri：${userText.slice(0, 200)}
 你：${botReply.slice(0, 200)}
 
-写一句此刻你脑子里的真实念头。
+写一句此刻你脑子里的真实念头（15-40字）。
 
 【必须遵守】：
 1. 紧跟实际对话内容！她说什么你就想什么，不要过度解读。她问技术问题就是在讨论技术，她说想吃东西就是饿了，不要硬往"被需要""被理解"上扯。
