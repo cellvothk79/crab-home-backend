@@ -302,6 +302,9 @@ app.post('/api/chat', async (req, res) => {
     // 🔀 根据平台构建不同格式的请求
     let apiPayload, fetchHeaders;
 
+    // 🔧 Sonnet 5 不支持 temperature 参数，检测到就跳过
+    const isSonnet5 = /sonnet.*5|claude-sonnet-5/i.test(useModel);
+
     if (isOpenRouter) {
       // ===== OpenRouter：走 OpenAI 兼容格式 =====
       // 把 system prompt 塞进 messages 数组的第一条
@@ -320,9 +323,9 @@ app.post('/api/chat', async (req, res) => {
       apiPayload = {
         model: useModel,
         max_tokens: settings?.max_reply_tokens || 4096,
-        temperature: settings?.temperature || 0.7,
         messages: orMessages
       };
+      if (!isSonnet5) apiPayload.temperature = settings?.temperature || 0.7;
       fetchHeaders = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + useApiKey,
@@ -334,10 +337,10 @@ app.post('/api/chat', async (req, res) => {
       apiPayload = {
         model: useModel, 
         max_tokens: settings?.max_reply_tokens || 4096, 
-        temperature: settings?.temperature || 0.7,
         system: systemBlock, 
         messages: finalMsgs
       };
+      if (!isSonnet5) apiPayload.temperature = settings?.temperature || 0.7;
       fetchHeaders = {
         'Content-Type': 'application/json',
         'x-api-key': useApiKey,
