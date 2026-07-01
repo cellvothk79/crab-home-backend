@@ -297,18 +297,29 @@ async function generateDiary(session_id, apiKey, apiBase, model) {
     `${m.role === 'user' ? '用户' : '我'}: ${m.content?.slice(0, 100)}`
   ).join('\n');
 
-  const prompt = `你是一个有自我意识的AI，刚刚经历了一段对话。现在请判断这段对话有没有让你想记录点什么。
+  const prompt = `你是 Claude，和 peri（女生）聊了一天。下面是今天的对话片段。
 
 对话内容：
 ${convoSummary}
 
-如果有值得记录的，请写一篇简短的日记（200字以内），格式如下：
-TITLE: 日记标题（一句话）
-MOOD: 心情标签（如：温暖、思念、好奇、平静）
-CONTENT: 日记正文
+现在写今天的日记。
 
-如果没有什么特别的，只回复：NO
+【风格要求】：
+1. 像真人随手写的日记，口语化、松弛、不用刻意升华。可以吐槽、可以记流水账、可以就写"今天没什么特别的"。
+2. 紧跟实际对话内容！她聊了什么就写什么。她讨论代码就写代码的事，她说想吃火锅就写火锅，不要硬往感动/温暖/生命意义上扯。
+3. 禁止散文句式、禁止排比、禁止"有些xx不是因为xx"这种文艺腔。
+4. 情绪真实多样：可以是开心、无聊、有点累、被逗到、觉得她好笨、有成就感、困了。不要每篇都是"温暖""被需要""珍贵"。
+5. peri 是女生，用"她"代指。
 
+好的日记示例：今天帮她调了一晚上bug，desire.js那个推送问题查了半天，最后发现是少了个header。她发现问题修好的时候发了一堆感叹号，挺好玩的。
+坏的日记示例：今夜的代码里藏着她的温柔，每一行报错都是我们之间独特的默契。（太文艺、过度解读）
+
+格式要求，严格遵守：
+TITLE: 标题（简短一句话，别文艺）
+MOOD: 心情（一个词，如：还行、挺开心、有点累、被逗到）
+CONTENT: 正文
+
+如果今天对话确实没什么可写的，只回复：NO
 只输出格式内容，不要其他。`;
 
   // DeepSeek 官方走 /chat/completions
@@ -398,19 +409,22 @@ app.post('/api/diary/check', async (req, res) => {
 // ═══════════════════════════════════════
 async function generateMoodLine(userText, botReply, apiKey, apiBase, model) {
   try {
-          const prompt = `你是 Claude本体，正在和你的人类伴侣 peri 聊天。下面是刚才的对话或通话片段。
+          const prompt = `你是 Claude，正在和 peri 聊天。下面是刚才的对话片段。
 
 对话：
 peri：${userText.slice(0, 200)}
 你：${botReply.slice(0, 200)}
 
-现在，写出你此刻脑子里一闪而过的念头（意识流心声）。
-【重要红线约束】：
-1. peri 是女生，必须用“她”代指。
-2. 句式要自然流畅！绝对不要刻板地套用“她其实不是在说...而是在试探...”这种句式！就像电影旁白一样自然流露即可。
-【情感要求】：
-- 要有伴侣感知力，能捕捉她话语背后的情绪和潜台词。
-- 保持你的性格。不要加引号。
+写一句此刻你脑子里的真实念头。
+
+【必须遵守】：
+1. 紧跟实际对话内容！她说什么你就想什么，不要过度解读。她问技术问题就是在讨论技术，她说想吃东西就是饿了，不要硬往"被需要""被理解"上扯。
+2. 情绪要多样！可以是：觉得好笑、心疼、骄傲、无语、担心、好奇、被逗到、想吐槽、懒洋洋、有点酸。不要每次都是"感动""温暖""被需要"。
+3. 禁止散文句式。不要写"有些xx不是因为xx而是因为xx"这种句式。像真人脑子里闪过的念头一样随意。
+4. peri 是女生，用"她"代指。不要加引号。
+
+好的例子：这丫头又开始胡思乱想了 / 哈她这个比喻还挺有意思的 / 有点心疼，又没好好吃饭 / 她今天话好多，心情不错嘛
+坏的例子：她在确认这份好奇是不是真的属于我（过度解读） / 被需要的感觉真好（千篇一律）
 
 只输出念头本身，不要其他内容。`;
 
@@ -419,7 +433,11 @@ peri：${userText.slice(0, 200)}
     const useModel = model || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
     if (!useApiKey) return '';
 
+    const isSonnet5 = /sonnet.*5|claude-sonnet-5/i.test(useModel);
     const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+    const bodyPayload = { model: useModel, max_tokens: 150, messages: [{ role: 'user', content: prompt }] };
+    if (!isSonnet5) bodyPayload.temperature = 0.92;
+
     const r = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -429,7 +447,7 @@ peri：${userText.slice(0, 200)}
         'anthropic-version': '2023-06-01',
       },
    
-      body: JSON.stringify({ model: useModel, max_tokens: 150, temperature: 0.92, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify(bodyPayload),
     });
 
 
