@@ -27,8 +27,12 @@ async function sendNtfyPush(title, message, type = 'text', greetTxt = '') {
   }
 
   try {
-    await fetch('https://ntfy.sh', { method: 'POST', body: JSON.stringify(payload) });
-    console.log(`[主动行为] 推送成功: [${type}]`);
+    const ntfyRes = await fetch('https://ntfy.sh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    console.log(`[主动行为] 推送${ntfyRes.ok ? '成功' : '失败(' + ntfyRes.status + ')'}: [${type}]`);
   } catch (err) {
     console.error(`[主动行为] 推送失败:`, err.message);
   }
@@ -121,7 +125,7 @@ function initDesireSystem(app) {
 
         console.log('[主动行为] 队列消息已触发送达！');
       }
-    } catch (e) { }
+    } catch (e) { console.error('[消息队列] Worker报错:', e.message); }
   }, 60 * 1000);
 
   // 定时器 2：欲望引擎心跳 
@@ -149,10 +153,13 @@ function initDesireSystem(app) {
         session_id: sid, attachment: newAttachment, reflection: desire.reflection || 0
       });
       
-      if (isNight && Math.random() > 0.2) return; 
+      if (isNight && Math.random() > 0.3) return; // 深夜 30% 通过（之前 20% 太低）
 
-      // 只要想念值高了，或者回忆被触动了，他就会找你
-      if ((newAttachment > 0.65 || (desire.reflection || 0) > 0.6) && Math.random() > 0.5) {
+      // 触发条件：思念值高 或 回忆被触动，两个条件独立判断
+      const attachmentTriggered = newAttachment > 0.65;
+      const reflectionTriggered = (desire.reflection || 0) > 0.4; // 降低门槛，之前0.6太高
+      
+      if ((attachmentTriggered || reflectionTriggered) && Math.random() > 0.35) { // 65%通过率（之前50%太低）
           
           // 潜意识闪回
           let memoryFlash = '';
@@ -182,12 +189,16 @@ function initDesireSystem(app) {
           const useApiKey = setObj?.api_key || process.env.CLAUDE_API_KEY || '';
           const useApiBase = (setObj?.api_base || process.env.CLAUDE_API_BASE || 'https://api.anthropic.com').replace(/\/+$/, '');
           const useModel = setObj?.model_name || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+          const isSonnet5 = /sonnet.*5|claude-sonnet-5/i.test(useModel);
           const apiUrl = useApiBase.endsWith('/v1') ? useApiBase + '/messages' : useApiBase + '/v1/messages';
+
+          const bodyPayload = { model: useModel, max_tokens: 200, messages: [{ role: 'user', content: prompt }] };
+          if (!isSonnet5) bodyPayload.temperature = 0.8;
 
           const r = await fetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + useApiKey, 'x-api-key': useApiKey, 'anthropic-version': '2023-06-01' },
-            body: JSON.stringify({ model: useModel, max_tokens: 200, temperature: 0.8, messages: [{ role: 'user', content: prompt }] }),
+            body: JSON.stringify(bodyPayload),
           });
           
           const data = await r.json();
@@ -208,7 +219,7 @@ function initDesireSystem(app) {
           console.log('[主动行为] 欲望引擎成功驱动了一次主动联系！');
       }
     } catch(e) {
-        console.error('[欲望引擎] 心跳执行报错:', e.message);
+        console.error('[欲望引擎] 心跳执行报错:', e.message, e.stack?.split('\n').slice(0,3).join(' '));
     }
   }, 5 * 60 * 1000); // 👈 5分钟心跳
 }
