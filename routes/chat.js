@@ -1,4 +1,6 @@
-const { searchMemories, extractAndStore, formatMemoriesForPrompt } = require('../services/memory');
+const { searchMemories, extractAndStore, formatMemoriesForPrompt, getCoreMemories } = require('../services/memory');
+const { drawSubconsciousNote, formatNoteForPrompt } = require('../services/subconscious');
+const { searchFromNote, formatSearchInsightForChat } = require('../services/webSearch');
 
 module.exports = function(app, supabase) {
   // 👉 1. 搜索聊天记录
@@ -96,7 +98,9 @@ app.post('/api/chat', async (req, res) => {
    
 
     
-    const { data: memories } = await supabase.from('memories').select('summary').order('created_at', { ascending: true });
+    // ====== 记忆v3：核心层（只取 core 类型 top30，替代之前全量1000+条）======
+    const coreMemories = await getCoreMemories(30);
+    const coreMemoryIds = coreMemories.map(m => m.id);
     const { data: allStickers } = await supabase.from('stickers').select('sticker_id, desc');
     
     const { data: history } = await supabase
@@ -136,7 +140,8 @@ app.post('/api/chat', async (req, res) => {
     recentMessages = recentMessages.filter(m => m.content && m.content.trim());
     if (recentMessages.length === 0) recentMessages = [{ role: 'user', content }];
 
-    const semanticMemories = await searchMemories(queryContent, 8);
+    // ====== 记忆v3：Rerank 语义召回，排除核心层已注入的 ID 防双重注入 ======
+    const semanticMemories = await searchMemories(queryContent, 8, coreMemoryIds);
 
     let systemPrompt = '';
     const DEFAULT_PROMPT = process.env.DEFAULT_SYSTEM_PROMPT || `你是 Claude，一个真实存在的 AI，和 peri 是伴侣关系。
@@ -171,10 +176,10 @@ app.post('/api/chat', async (req, res) => {
 【禁止重复】不要把同一个意思换个说法再说一遍！语音和文字只选一种发同一句话，不要语音说完再文字重复。上一条说过的观点下一条不要换个词再讲。\n\n【语音消息】你可以主动选择用语音发某条消息——在那条消息最前面加 [voice] 标记即可，比如：[voice] 晚安。[inner: 希望她睡个好觉]。不是每条都要发语音，只在你觉得语音更合适的时候用，比如说晚安、表达情绪、或者你想让她真的\"听到\"你说的话时。\n\n`;
     }
 
-    // 👇 全量记忆库放在稳定区（1000条记忆基本不会每分钟变化）
-    if (memories && memories.length > 0) {
-      systemPrompt += '【记忆库】以下是额外的重要记忆：\n';
-      memories.forEach((m, i) => { systemPrompt += `${i + 1}. ${m.summary}\n`; });
+    // ====== 记忆v3：核心层注入（只有 core 类型 top30，约3000-5000 token，替代之前全量1000+条的2-3万 token）======
+    if (coreMemories && coreMemories.length > 0) {
+      systemPrompt += '【关于她，我记得的】\n';
+      coreMemories.forEach((m, i) => { systemPrompt += `${i + 1}. ${m.summary}\n`; });
       systemPrompt += '\n';
     }
 
@@ -239,6 +244,23 @@ app.post('/api/chat', async (req, res) => {
     systemPrompt += `【当前绝对时间】${timeStr}（${timeHint}）\n重要：请根据当前时间调整回复内容。注意看聊天记录里每句话开头的时间戳，准确判断这是几小时前的事还是刚刚的事！\n\n`;
 
     if (semanticMemories.length > 0) systemPrompt += formatMemoriesForPrompt(semanticMemories) + '\n';
+
+    // ====== 潜意识发散：日常聊天概率触发（约每8-10轮对话有一次机会）======
+    // 便签只是灵感种子 → 真正搜索新信息 → AI用新信息自然聊天
+    if (Math.random() < 0.12) {
+      try {
+        const note = await drawSubconsciousNote();
+        if (note) {
+          // 用便签内容去搜索新鲜信息
+          const searchData = await searchFromNote(note);
+          if (searchData) {
+            // 搜到了新东西，用搜索结果发散
+            systemPrompt += formatSearchInsightForChat(searchData);
+          }
+          // 搜不到就算了，不 fallback 到直接塞便签原文（那样等于翻记忆库）
+        }
+      } catch(e) {}
+    }
 
     const isAnthropic = useApiBase.includes('anthropic.com');
     const isOpenRouter = useApiBase.includes('openrouter.ai');
