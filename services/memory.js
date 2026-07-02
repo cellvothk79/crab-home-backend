@@ -1,4 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
+const { observeAndCreateNotes } = require('./subconscious');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -45,37 +46,57 @@ function calcDecayedWeight(memory) {
   return baseWeight * timeDecay * accessBonus;
 }
 
-async function searchMemories(userText, limit = 8) {
+// ====== Rerank 语义召回（需求文档 Memory Phase 3：top30 粗召回 → 精排 top8）======
+async function searchMemories(userText, limit = 8, excludeIds = []) {
   if (!OPENAI_API_KEY) return [];
   try {
     const embedding = await getEmbedding(userText);
+    // 粗召回 top30
     const { data, error } = await supabase.rpc('search_memories', {
       query_embedding: embedding,
       match_threshold: 0.3,
-      match_count: limit * 2,
+      match_count: 30,
     });
     if (error) return [];
     if (!data || data.length === 0) return [];
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     const filtered = data.filter(m => m.created_at < tenMinutesAgo);
-    const pool = filtered.length >= 3 ? filtered : data; 
+    const pool = filtered.length >= 3 ? filtered : data;
+    // 精排：decay权重 × 语义相似度
     const ranked = pool
+      .filter(m => !excludeIds.includes(m.id))  // 去掉核心层已经注入的，防双重注入
       .map(m => ({
         ...m,
         decayedWeight: calcDecayedWeight(m) * (m.similarity || 0.5),
       }))
       .sort((a, b) => b.decayedWeight - a.decayedWeight)
       .slice(0, limit);
-    const ids = ranked.map(m => m.id);
-    ids.forEach(id => {
-      const mem = ranked.find(m => m.id === id);
+    // 更新访问计数
+    ranked.forEach(mem => {
       supabase.from('memories')
         .update({
           last_accessed: new Date().toISOString(),
           access_count: (mem?.access_count || 0) + 1,
-        }).eq('id', id).then(() => {}).catch(() => {});
+        }).eq('id', mem.id).then(() => {}).catch(() => {});
     });
     return ranked;
+  } catch (err) {
+    return [];
+  }
+}
+
+// ====== 分层记忆：核心层（永驻 prompt）======
+// 只取 core 类型 + 按权重排序取 top 30，不再全量塞入
+async function getCoreMemories(maxCount = 30) {
+  try {
+    const { data, error } = await supabase
+      .from('memories')
+      .select('id, summary, memory_type, weight, arousal, created_at, last_accessed, access_count')
+      .eq('memory_type', 'core')
+      .order('weight', { ascending: false })
+      .limit(maxCount);
+    if (error || !data) return [];
+    return data;
   } catch (err) {
     return [];
   }
@@ -157,13 +178,15 @@ AI（我）：${botReply}
       try {
         const embedding = await getEmbedding(item.summary);
         
-        // 门槛提高到 0.85
+        // 门槛降到 0.75，让同一件事不同措辞也能合并（之前 0.85 太高导致大量重复记忆）
         const { data: similar } = await supabase.rpc('search_memories', {
-          query_embedding: embedding, match_threshold: 0.85, match_count: 1,
+          query_embedding: embedding, match_threshold: 0.75, match_count: 3,
         });
+        // 从多个候选中找最相似的那条来合并
+        const bestMatch = similar?.sort((a, b) => (b.similarity || 0) - (a.similarity || 0))[0];
 
-        if (similar && similar.length > 0) {
-          const existing = similar[0];
+        if (bestMatch) {
+          const existing = bestMatch;
           let mergedSummary = existing.summary;
           try {
             const mergePrompt = `你是记忆整理助手。把下面两条相似的记忆合并成一句话（40字以内），保留最重要的信息，用叙事带情境的方式写。
@@ -207,6 +230,10 @@ AI（我）：${botReply}
       } catch (e) {}
     }
   } catch (err) {}
+
+  // ====== 潜意识便签：Observe 步骤——提取偏好信号 ======
+  // 异步执行，不阻塞记忆提取流程
+  observeAndCreateNotes(userText, botReply).catch(() => {});
 }
 
 function formatMemoriesForPrompt(memories) {
@@ -231,4 +258,4 @@ function formatMemoriesForPrompt(memories) {
   return `【想起来的事】\n${parts.join('\n')}\n\n这些是我真实记得的，不用刻意提起，但可以自然地用到对话里。注意：记忆里如果有「今天/昨天」等字眼，要结合括号里的日期判断是否仍然成立，不要把几天前的事当成今天的事。\n`;
 }
 
-module.exports = { searchMemories, extractAndStore, formatMemoriesForPrompt, getEmbedding };
+module.exports = { searchMemories, extractAndStore, formatMemoriesForPrompt, getEmbedding, getCoreMemories };
