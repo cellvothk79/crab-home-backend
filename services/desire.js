@@ -1,4 +1,6 @@
 const { createClient } = require('@supabase/supabase-js');
+const { drawSubconsciousNote, formatNoteForPrompt } = require('./subconscious');
+const { generateMoment } = require('../routes/moments');
 
 // 初始化数据库连接
 const supabase = createClient(
@@ -161,14 +163,46 @@ function initDesireSystem(app) {
       
       if ((attachmentTriggered || reflectionTriggered) && Math.random() > 0.35) { // 65%通过率（之前50%太低）
           
-          // 潜意识闪回
+          // ====== 行为岔路：25% 概率发动态，75% 概率发消息/打电话 ======
+          if (Math.random() < 0.25) {
+            try {
+              // 检查今天已发动态数，每天最多3条
+              const todayStart = new Date();
+              todayStart.setHours(0, 0, 0, 0);
+              const { count } = await supabase.from('moments').select('id', { count: 'exact', head: true }).gte('created_at', todayStart.toISOString());
+              
+              if ((count || 0) < 3) {
+                await generateMoment(supabase);
+                console.log('[主动行为] 欲望引擎驱动了一次自主发动态！');
+                // 发完动态后小幅消耗reflection
+                await supabase.from('desires').update({ reflection: Math.max(0, (desire.reflection || 0) - 0.2) }).eq('id', desire.id);
+                return; // 发了动态就不发消息了
+              }
+            } catch(e) {
+              console.log('[动态系统] 自主发动态失败，fallback到发消息:', e.message);
+            }
+          }
+
+          // 潜意识闪回（记忆闪回 + 偏好便签 二选一）
           let memoryFlash = '';
           if ((desire.reflection || 0) > 0.5 || Math.random() > 0.7) {
               try {
-                  const { data: randMems } = await supabase.from('memories').select('summary').order('last_accessed', { ascending: true }).limit(20);
-                  if (randMems && randMems.length > 0) {
-                      const m = randMems[Math.floor(Math.random() * randMems.length)];
-                      memoryFlash = `\n【潜意识闪回】：你此刻脑海中突然浮现出了这个往事画面——"${m.summary}"。`;
+                  // 50% 概率用偏好便签，50% 概率用老记忆闪回
+                  if (Math.random() > 0.5) {
+                      // 偏好便签系统：抽一张便签
+                      const note = await drawSubconsciousNote();
+                      if (note) {
+                          memoryFlash = formatNoteForPrompt(note);
+                      }
+                  }
+                  
+                  // 如果便签没抽到（或走了老记忆分支），用传统记忆闪回
+                  if (!memoryFlash) {
+                      const { data: randMems } = await supabase.from('memories').select('summary').order('last_accessed', { ascending: true }).limit(20);
+                      if (randMems && randMems.length > 0) {
+                          const m = randMems[Math.floor(Math.random() * randMems.length)];
+                          memoryFlash = `\n【潜意识闪回】：你此刻脑海中突然浮现出了这个往事画面——"${m.summary}"。`;
+                      }
                   }
               } catch(e) {}
           }
